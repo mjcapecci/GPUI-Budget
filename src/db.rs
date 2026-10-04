@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use chrono::NaiveDate;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
@@ -89,6 +89,10 @@ impl Db {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("opening database {}", path.display()))?;
+        let version = schema_version(&conn)?;
+        if version > 0 && version < MIGRATIONS.len() as i64 {
+            backup(&conn, path, version)?;
+        }
         Self::init(conn)
     }
 
@@ -105,9 +109,14 @@ impl Db {
     }
 
     fn migrate(&self) -> Result<()> {
-        let version: i64 = self
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let version = schema_version(&self.conn)?;
+        if version > MIGRATIONS.len() as i64 {
+            bail!(
+                "this database was created by a newer version of Budget \
+                 (schema v{version}, this build supports up to v{}); please update the app",
+                MIGRATIONS.len()
+            );
+        }
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
             let tx = self.conn.unchecked_transaction()?;
             tx.execute_batch(sql)
@@ -454,6 +463,25 @@ impl Db {
             .collect();
         Ok(spending)
     }
+}
+
+fn schema_version(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+/// Snapshots the database to `budget.db.bak-v{version}` before migrating it,
+/// replacing any earlier backup of the same version.
+fn backup(conn: &Connection, path: &Path, version: i64) -> Result<()> {
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(format!(".bak-v{version}"));
+    let dest = path.with_file_name(name);
+    if dest.exists() {
+        std::fs::remove_file(&dest)
+            .with_context(|| format!("removing old backup {}", dest.display()))?;
+    }
+    conn.execute("VACUUM INTO ?1", [dest.to_string_lossy()])
+        .with_context(|| format!("backing up database to {}", dest.display()))?;
+    Ok(())
 }
 
 fn row_to_transaction(r: &Row) -> rusqlite::Result<Transaction> {
@@ -872,5 +900,35 @@ mod tests {
         assert_eq!(t.category_id, Some(category(&db, "Groceries")));
         assert_eq!(t.previous_category, None);
         assert_eq!(t.payment_method_id, None);
+    }
+
+    #[test]
+    fn refuses_a_database_from_a_newer_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", MIGRATIONS.len() as i64 + 1)
+            .unwrap();
+        let err = Db::init(conn).err().unwrap();
+        assert!(err.to_string().contains("newer version"));
+    }
+
+    #[test]
+    fn backs_up_before_migrating() {
+        let dir = std::env::temp_dir().join(format!("budget-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("budget.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        drop(conn);
+
+        Db::open(&path).unwrap();
+        let backup = Connection::open(dir.join("budget.db.bak-v1")).unwrap();
+        assert_eq!(schema_version(&backup).unwrap(), 1);
+
+        // Already up to date: no new backup.
+        std::fs::remove_file(dir.join("budget.db.bak-v1")).unwrap();
+        Db::open(&path).unwrap();
+        assert!(!dir.join("budget.db.bak-v1").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
