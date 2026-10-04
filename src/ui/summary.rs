@@ -1,6 +1,6 @@
 use gpui_kit::component::chart::*;
-use gpui_kit::component::*;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -35,7 +35,12 @@ fn stat_card(label: &'static str, value: Money, color: Hsla, cx: &App) -> impl I
         .rounded_lg()
         .border_1()
         .border_color(cx.theme().border)
-        .child(div().text_sm().text_color(cx.theme().muted_foreground).child(label))
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(label),
+        )
         .child(
             div()
                 .text_2xl()
@@ -58,7 +63,9 @@ fn payment_row(name: SharedString, spent: Money, muted: bool, cx: &App) -> impl 
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .when(muted, |this| this.italic().text_color(theme.muted_foreground))
+                .when(muted, |this| {
+                    this.italic().text_color(theme.muted_foreground)
+                })
                 .child(name),
         )
         .child(
@@ -80,7 +87,9 @@ impl Render for SummaryView {
         let mut payment_rows: Vec<AnyElement> = spending
             .by_method
             .iter()
-            .map(|(p, spent)| payment_row(p.name.clone().into(), *spent, false, cx).into_any_element())
+            .map(|(p, spent)| {
+                payment_row(p.name.clone().into(), *spent, false, cx).into_any_element()
+            })
             .collect();
         if spending.unassigned.0 > 0 {
             payment_rows.push(
@@ -146,11 +155,20 @@ impl Render for SummaryView {
                 h_flex()
                     .gap_4()
                     .child(stat_card("Income", summary.income, theme.success, cx))
-                    .child(stat_card("Expenses", summary.expenses, theme.foreground, cx))
+                    .child(stat_card(
+                        "Expenses",
+                        summary.expenses,
+                        theme.foreground,
+                        cx,
+                    ))
                     .child(stat_card(
                         "Net",
                         net,
-                        if net.0 < 0 { theme.danger } else { theme.success },
+                        if net.0 < 0 {
+                            theme.danger
+                        } else {
+                            theme.success
+                        },
                         cx,
                     )),
             )
@@ -160,7 +178,11 @@ impl Render for SummaryView {
                     .child(
                         h_flex()
                             .justify_between()
-                            .child(div().font_weight(FontWeight::MEDIUM).child("Spending by category"))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Spending by category"),
+                            )
                             .child(
                                 div()
                                     .text_sm()

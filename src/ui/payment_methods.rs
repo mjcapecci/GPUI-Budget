@@ -1,7 +1,7 @@
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::*;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -55,7 +55,8 @@ impl PaymentMethodsView {
                 let unassigned =
                     |s: &AppState| s.payment_method_counts.get(&None).copied().unwrap_or(0);
                 let before = unassigned(self.state.read(cx));
-                self.state.update(cx, |s, cx| s.add_payment_method(name.clone(), cx));
+                self.state
+                    .update(cx, |s, cx| s.add_payment_method(name.clone(), cx));
                 let restored = before.saturating_sub(unassigned(self.state.read(cx)));
                 self.notice = (restored > 0).then(|| {
                     format!("Moved {} back to \"{name}\".", transactions_label(restored)).into()
@@ -78,7 +79,11 @@ impl PaymentMethodsView {
             .rounded_lg()
             .border_1()
             .border_color(cx.theme().border)
-            .child(div().font_weight(FontWeight::MEDIUM).child("Add payment method"))
+            .child(
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Add payment method"),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -106,7 +111,11 @@ impl PaymentMethodsView {
             .iter()
             .map(|method| {
                 let id = method.id;
-                let count = state.payment_method_counts.get(&Some(id)).copied().unwrap_or(0);
+                let count = state
+                    .payment_method_counts
+                    .get(&Some(id))
+                    .copied()
+                    .unwrap_or(0);
                 let confirming = self.confirming == Some(id);
 
                 let actions = if confirming {
@@ -130,7 +139,8 @@ impl PaymentMethodsView {
                                 .label("Delete")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.confirming = None;
-                                    this.state.update(cx, |s, cx| s.delete_payment_method(id, cx));
+                                    this.state
+                                        .update(cx, |s, cx| s.delete_payment_method(id, cx));
                                 })),
                         )
                         .child(
@@ -164,7 +174,13 @@ impl PaymentMethodsView {
                     .border_b_1()
                     .border_color(theme.border)
                     .when(confirming, |this| this.bg(theme.list_active))
-                    .child(div().flex_1().min_w_0().truncate().child(method.name.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(method.name.clone()),
+                    )
                     .child(
                         div()
                             .w(px(120.))

@@ -32,7 +32,11 @@ impl Money {
         {
             return None;
         }
-        let whole: i64 = if whole.is_empty() { 0 } else { whole.parse().ok()? };
+        let whole: i64 = if whole.is_empty() {
+            0
+        } else {
+            whole.parse().ok()?
+        };
         let frac: i64 = match frac.len() {
             0 => 0,
             1 => frac.parse::<i64>().ok()? * 10,
@@ -111,7 +115,11 @@ pub fn validate_payment_method_name(
     name: &str,
     existing: &[PaymentMethod],
 ) -> Result<String, String> {
-    validate_name(name, existing.iter().map(|p| p.name.as_str()), "payment method")
+    validate_name(
+        name,
+        existing.iter().map(|p| p.name.as_str()),
+        "payment method",
+    )
 }
 
 fn validate_name<'a>(
@@ -124,7 +132,9 @@ fn validate_name<'a>(
         return Err(format!("Enter a {noun} name."));
     }
     if name.eq_ignore_ascii_case(UNASSIGNED) {
-        return Err(format!("\"{UNASSIGNED}\" is reserved for transactions whose {noun} was deleted."));
+        return Err(format!(
+            "\"{UNASSIGNED}\" is reserved for transactions whose {noun} was deleted."
+        ));
     }
     if let Some(n) = existing.find(|n| n.eq_ignore_ascii_case(name)) {
         return Err(format!("A {noun} named \"{n}\" already exists."));
@@ -198,17 +208,29 @@ impl Month {
 
     pub fn next(self) -> Self {
         if self.month == 12 {
-            Month { year: self.year + 1, month: 1 }
+            Month {
+                year: self.year + 1,
+                month: 1,
+            }
         } else {
-            Month { year: self.year, month: self.month + 1 }
+            Month {
+                year: self.year,
+                month: self.month + 1,
+            }
         }
     }
 
     pub fn prev(self) -> Self {
         if self.month == 1 {
-            Month { year: self.year - 1, month: 12 }
+            Month {
+                year: self.year - 1,
+                month: 12,
+            }
         } else {
-            Month { year: self.year, month: self.month - 1 }
+            Month {
+                year: self.year,
+                month: self.month - 1,
+            }
         }
     }
 
@@ -318,17 +340,49 @@ mod tests {
 
     #[test]
     fn month_navigation() {
-        let m = Month { year: 2026, month: 12 };
-        assert_eq!(m.next(), Month { year: 2027, month: 1 });
+        let m = Month {
+            year: 2026,
+            month: 12,
+        };
+        assert_eq!(
+            m.next(),
+            Month {
+                year: 2027,
+                month: 1
+            }
+        );
         assert_eq!(m.next().prev(), m);
-        assert_eq!(Month { year: 2026, month: 1 }.prev().key(), "2025-12");
-        assert_eq!(Month { year: 2026, month: 10 }.label(), "October 2026");
+        assert_eq!(
+            Month {
+                year: 2026,
+                month: 1
+            }
+            .prev()
+            .key(),
+            "2025-12"
+        );
+        assert_eq!(
+            Month {
+                year: 2026,
+                month: 10
+            }
+            .label(),
+            "October 2026"
+        );
     }
 
     #[test]
     fn category_status() {
-        let category = Category { id: 1, name: "Food".into(), kind: CategoryKind::Expense };
-        let s = CategoryStatus { category, spent: Money(15000), budget: Some(Money(10000)) };
+        let category = Category {
+            id: 1,
+            name: "Food".into(),
+            kind: CategoryKind::Expense,
+        };
+        let s = CategoryStatus {
+            category,
+            spent: Money(15000),
+            budget: Some(Money(10000)),
+        };
         assert!(s.is_over_budget());
         assert_eq!(s.remaining(), Some(Money(-5000)));
         assert_eq!(s.used_fraction(), 1.0);
@@ -336,8 +390,15 @@ mod tests {
 
     #[test]
     fn category_name_validation() {
-        let existing = [Category { id: 1, name: "Food".into(), kind: CategoryKind::Expense }];
-        assert_eq!(validate_category_name("  Pets ", &existing), Ok("Pets".into()));
+        let existing = [Category {
+            id: 1,
+            name: "Food".into(),
+            kind: CategoryKind::Expense,
+        }];
+        assert_eq!(
+            validate_category_name("  Pets ", &existing),
+            Ok("Pets".into())
+        );
         assert!(validate_category_name("   ", &existing).is_err());
         assert!(validate_category_name("food", &existing).is_err());
         assert!(validate_category_name("unassigned", &existing).is_err());
@@ -345,8 +406,14 @@ mod tests {
 
     #[test]
     fn payment_method_name_validation() {
-        let existing = [PaymentMethod { id: 1, name: "Chase Visa".into() }];
-        assert_eq!(validate_payment_method_name(" Amex ", &existing), Ok("Amex".into()));
+        let existing = [PaymentMethod {
+            id: 1,
+            name: "Chase Visa".into(),
+        }];
+        assert_eq!(
+            validate_payment_method_name(" Amex ", &existing),
+            Ok("Amex".into())
+        );
         assert!(validate_payment_method_name("", &existing).is_err());
         assert_eq!(
             validate_payment_method_name("chase visa", &existing),

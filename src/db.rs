@@ -123,7 +123,9 @@ impl Db {
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
         Ok(self
             .conn
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
             .optional()?)
     }
 
@@ -207,7 +209,12 @@ impl Db {
         let mut stmt = self
             .conn
             .prepare("SELECT id, name FROM payment_methods ORDER BY name")?;
-        let rows = stmt.query_map([], |r| Ok(PaymentMethod { id: r.get(0)?, name: r.get(1)? }))?;
+        let rows = stmt.query_map([], |r| {
+            Ok(PaymentMethod {
+                id: r.get(0)?,
+                name: r.get(1)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -278,7 +285,13 @@ impl Db {
              VALUES (?1, ?2, ?3, ?4,
                      CASE (SELECT kind FROM categories WHERE id = ?3)
                          WHEN 'expense' THEN ?5 END)",
-            params![t.date.to_string(), t.amount.0, t.category_id, t.note, t.payment_method_id],
+            params![
+                t.date.to_string(),
+                t.amount.0,
+                t.category_id,
+                t.note,
+                t.payment_method_id
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -381,7 +394,11 @@ impl Db {
         )?;
         let mut summary = MonthSummary::default();
         let rows = stmt.query_map([month.key()], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, bool>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })?;
         for row in rows {
             let (kind, unassigned, total) = row?;
@@ -410,7 +427,11 @@ impl Db {
              GROUP BY 1, 2",
         )?;
         let rows = stmt.query_map([month.key()], |r| {
-            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, bool>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, Option<i64>>(0)?,
+                r.get::<_, bool>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })?;
         let mut spent = HashMap::new();
         let mut spending = PaymentMethodSpending::default();
@@ -445,7 +466,10 @@ fn row_to_transaction(r: &Row) -> rusqlite::Result<Transaction> {
         amount: Money(r.get(2)?),
         category_id: r.get(3)?,
         note: r.get(4)?,
-        previous_category: match (r.get::<_, Option<String>>(5)?, r.get::<_, Option<String>>(6)?) {
+        previous_category: match (
+            r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<String>>(6)?,
+        ) {
             (Some(name), Some(kind)) => Some(PreviousCategory {
                 name,
                 kind: CategoryKind::from_str(&kind).unwrap_or(CategoryKind::Expense),
@@ -466,7 +490,12 @@ mod tests {
     }
 
     fn category(db: &Db, name: &str) -> i64 {
-        db.categories().unwrap().into_iter().find(|c| c.name == name).unwrap().id
+        db.categories()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap()
+            .id
     }
 
     fn add(db: &Db, d: &str, cents: i64, cat: &str) -> i64 {
@@ -480,7 +509,10 @@ mod tests {
         .unwrap()
     }
 
-    const OCT: Month = Month { year: 2026, month: 10 };
+    const OCT: Month = Month {
+        year: 2026,
+        month: 10,
+    };
 
     #[test]
     fn seeds_categories_and_migrates_once() {
@@ -502,15 +534,23 @@ mod tests {
         assert_eq!(oct.len(), 2);
         assert_eq!(oct[0].date, date("2026-10-15"), "newest first");
 
-        db.update_transaction(a, &TransactionInput {
-            date: date("2026-10-02"),
-            amount: Money(1234),
-            category_id: category(&db, "Dining Out"),
-            payment_method_id: None,
-            note: "lunch".into(),
-        })
+        db.update_transaction(
+            a,
+            &TransactionInput {
+                date: date("2026-10-02"),
+                amount: Money(1234),
+                category_id: category(&db, "Dining Out"),
+                payment_method_id: None,
+                note: "lunch".into(),
+            },
+        )
         .unwrap();
-        let t = db.transactions_in(OCT).unwrap().into_iter().find(|t| t.id == a).unwrap();
+        let t = db
+            .transactions_in(OCT)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == a)
+            .unwrap();
         assert_eq!((t.amount, t.note.as_str()), (Money(1234), "lunch"));
 
         db.delete_transaction(a).unwrap();
@@ -533,7 +573,8 @@ mod tests {
     fn budgets_carry_forward_and_track_spending() {
         let db = Db::open_in_memory().unwrap();
         let groceries = category(&db, "Groceries");
-        db.set_budget(groceries, OCT.prev(), Some(Money(40000))).unwrap();
+        db.set_budget(groceries, OCT.prev(), Some(Money(40000)))
+            .unwrap();
         add(&db, "2026-10-03", 45000, "Groceries");
 
         let status = db
@@ -542,13 +583,20 @@ mod tests {
             .into_iter()
             .find(|s| s.category.id == groceries)
             .unwrap();
-        assert_eq!(status.budget, Some(Money(40000)), "inherited from September");
+        assert_eq!(
+            status.budget,
+            Some(Money(40000)),
+            "inherited from September"
+        );
         assert_eq!(status.spent, Money(45000));
         assert!(status.is_over_budget());
 
         db.set_budget(groceries, OCT, Some(Money(50000))).unwrap();
         assert_eq!(db.budget_for(groceries, OCT).unwrap(), Some(Money(50000)));
-        assert_eq!(db.budget_for(groceries, OCT.prev()).unwrap(), Some(Money(40000)));
+        assert_eq!(
+            db.budget_for(groceries, OCT.prev()).unwrap(),
+            Some(Money(40000))
+        );
 
         db.set_budget(groceries, OCT, None).unwrap();
         assert_eq!(db.budget_for(groceries, OCT).unwrap(), Some(Money(40000)));
@@ -567,9 +615,20 @@ mod tests {
     fn add_category() {
         let db = Db::open_in_memory().unwrap();
         let id = db.add_category("Pets", CategoryKind::Expense).unwrap();
-        let pets = db.categories().unwrap().into_iter().find(|c| c.id == id).unwrap();
-        assert_eq!((pets.name.as_str(), pets.kind), ("Pets", CategoryKind::Expense));
-        assert!(db.add_category("Pets", CategoryKind::Income).is_err(), "names are unique");
+        let pets = db
+            .categories()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap();
+        assert_eq!(
+            (pets.name.as_str(), pets.kind),
+            ("Pets", CategoryKind::Expense)
+        );
+        assert!(
+            db.add_category("Pets", CategoryKind::Income).is_err(),
+            "names are unique"
+        );
     }
 
     #[test]
@@ -585,7 +644,12 @@ mod tests {
 
         assert_eq!(db.delete_category(groceries).unwrap(), 2);
         assert_eq!(db.delete_category(salary).unwrap(), 1);
-        assert!(db.categories().unwrap().iter().all(|c| c.id != groceries && c.id != salary));
+        assert!(
+            db.categories()
+                .unwrap()
+                .iter()
+                .all(|c| c.id != groceries && c.id != salary)
+        );
         assert_eq!(db.budget_for(groceries, OCT).unwrap(), None);
 
         let all: Vec<Transaction> = [OCT.prev(), OCT]
@@ -597,7 +661,10 @@ mod tests {
             assert_eq!(t.category_id, None);
             assert_eq!(
                 t.previous_category,
-                Some(PreviousCategory { name: "Groceries".into(), kind: CategoryKind::Expense })
+                Some(PreviousCategory {
+                    name: "Groceries".into(),
+                    kind: CategoryKind::Expense
+                })
             );
         }
 
@@ -611,15 +678,23 @@ mod tests {
         assert_eq!(counts.get(&None), Some(&3));
 
         // Re-filing a transaction clears its previous category.
-        db.update_transaction(oct, &TransactionInput {
-            date: date("2026-10-03"),
-            amount: Money(6000),
-            category_id: category(&db, "Other"),
-            payment_method_id: None,
-            note: String::new(),
-        })
+        db.update_transaction(
+            oct,
+            &TransactionInput {
+                date: date("2026-10-03"),
+                amount: Money(6000),
+                category_id: category(&db, "Other"),
+                payment_method_id: None,
+                note: String::new(),
+            },
+        )
         .unwrap();
-        let t = db.transactions_in(OCT).unwrap().into_iter().find(|t| t.id == oct).unwrap();
+        let t = db
+            .transactions_in(OCT)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == oct)
+            .unwrap();
         assert_eq!(t.category_id, Some(category(&db, "Other")));
         assert_eq!(t.previous_category, None);
         assert_eq!(db.month_summary(OCT).unwrap().unassigned_expenses, Money(0));
@@ -650,7 +725,10 @@ mod tests {
             assert_eq!(t.previous_category, None);
         }
         let t = all.iter().find(|t| t.id == salary).unwrap();
-        assert_eq!(t.category_id, None, "still waiting for an income category named Salary");
+        assert_eq!(
+            t.category_id, None,
+            "still waiting for an income category named Salary"
+        );
         assert_eq!(db.month_summary(OCT).unwrap().unassigned_expenses, Money(0));
     }
 
@@ -679,7 +757,12 @@ mod tests {
         let visa = db.add_payment_method("Visa").unwrap();
         let amex = db.add_payment_method("Amex").unwrap();
         assert!(db.add_payment_method("Visa").is_err(), "names are unique");
-        let names: Vec<String> = db.payment_methods().unwrap().into_iter().map(|p| p.name).collect();
+        let names: Vec<String> = db
+            .payment_methods()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
         assert_eq!(names, ["Amex", "Visa"]);
 
         pay(&db, "2026-10-03", 12000, "Groceries", Some(visa));
@@ -687,11 +770,18 @@ mod tests {
         pay(&db, "2026-10-05", 800, "Dining Out", None);
         pay(&db, "2026-09-20", 9900, "Groceries", Some(visa));
         let salary = pay(&db, "2026-10-01", 500000, "Salary", Some(amex));
-        assert_eq!(find(&db, salary).payment_method_id, None, "income has no payment method");
+        assert_eq!(
+            find(&db, salary).payment_method_id,
+            None,
+            "income has no payment method"
+        );
 
         let s = db.payment_method_spending(OCT).unwrap();
-        let totals: Vec<(&str, Money)> =
-            s.by_method.iter().map(|(p, m)| (p.name.as_str(), *m)).collect();
+        let totals: Vec<(&str, Money)> = s
+            .by_method
+            .iter()
+            .map(|(p, m)| (p.name.as_str(), *m))
+            .collect();
         assert_eq!(totals, [("Amex", Money(0)), ("Visa", Money(15000))]);
         assert_eq!((s.unassigned, s.unspecified), (Money(0), Money(800)));
     }
@@ -709,7 +799,10 @@ mod tests {
         assert_eq!(db.delete_payment_method(visa).unwrap(), 4);
         assert!(db.payment_methods().unwrap().is_empty());
         let t = find(&db, oct);
-        assert_eq!((t.payment_method_id, t.previous_payment_method.as_deref()), (None, Some("Visa")));
+        assert_eq!(
+            (t.payment_method_id, t.previous_payment_method.as_deref()),
+            (None, Some("Visa"))
+        );
         assert_eq!(db.payment_method_counts().unwrap().get(&None), Some(&4));
         let s = db.payment_method_spending(OCT).unwrap();
         assert_eq!((s.unassigned, s.unspecified), (Money(9500), Money(700)));
@@ -718,19 +811,25 @@ mod tests {
         // choosing another one, or making it income, forgets it.
         let amex = db.add_payment_method("Amex").unwrap();
         let edit = |id, cat: &str, method| {
-            db.update_transaction(id, &TransactionInput {
-                date: date("2026-10-04"),
-                amount: Money(2600),
-                category_id: category(&db, cat),
-                payment_method_id: method,
-                note: String::new(),
-            })
+            db.update_transaction(
+                id,
+                &TransactionInput {
+                    date: date("2026-10-04"),
+                    amount: Money(2600),
+                    category_id: category(&db, cat),
+                    payment_method_id: method,
+                    note: String::new(),
+                },
+            )
             .unwrap()
         };
         edit(edited, "Dining Out", None);
         edit(refiled, "Dining Out", Some(amex));
         edit(sep, "Other Income", None);
-        assert_eq!(find(&db, edited).previous_payment_method.as_deref(), Some("Visa"));
+        assert_eq!(
+            find(&db, edited).previous_payment_method.as_deref(),
+            Some("Visa")
+        );
         assert_eq!(find(&db, refiled).payment_method_id, Some(amex));
         assert_eq!(find(&db, refiled).previous_payment_method, None);
         assert_eq!(find(&db, sep).previous_payment_method, None);
@@ -742,11 +841,17 @@ mod tests {
         let visa = db.add_payment_method("Visa").unwrap();
         for id in [oct, edited] {
             let t = find(&db, id);
-            assert_eq!((t.payment_method_id, t.previous_payment_method), (Some(visa), None));
+            assert_eq!(
+                (t.payment_method_id, t.previous_payment_method),
+                (Some(visa), None)
+            );
         }
         assert_eq!(find(&db, sep).payment_method_id, None);
         assert_eq!(db.payment_method_counts().unwrap().get(&None), None);
-        assert_eq!(db.payment_method_counts().unwrap().get(&Some(visa)), Some(&2));
+        assert_eq!(
+            db.payment_method_counts().unwrap().get(&Some(visa)),
+            Some(&2)
+        );
     }
 
     #[test]

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::progress::*;
-use gpui_kit::component::*;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -52,9 +52,16 @@ impl BudgetsView {
 
     /// Add an input for each new category and drop those of deleted ones.
     fn sync_categories(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let category_ids: Vec<i64> = self.state.read(cx).statuses.iter().map(|s| s.category.id).collect();
+        let category_ids: Vec<i64> = self
+            .state
+            .read(cx)
+            .statuses
+            .iter()
+            .map(|s| s.category.id)
+            .collect();
         self.inputs.retain(|id, _| category_ids.contains(id));
-        self.input_subscriptions.retain(|id, _| category_ids.contains(id));
+        self.input_subscriptions
+            .retain(|id, _| category_ids.contains(id));
 
         for category_id in category_ids {
             if self.inputs.contains_key(&category_id) {
@@ -141,7 +148,12 @@ impl Render for BudgetsView {
         let state = self.state.read(cx);
         let theme = cx.theme();
 
-        let total_budget: i64 = state.statuses.iter().filter_map(|s| s.budget).map(|m| m.0).sum();
+        let total_budget: i64 = state
+            .statuses
+            .iter()
+            .filter_map(|s| s.budget)
+            .map(|m| m.0)
+            .sum();
         let total_spent: i64 = state.statuses.iter().map(|s| s.spent.0).sum();
 
         let rows = state.statuses.iter().map(|status| {
@@ -172,18 +184,29 @@ impl Render for BudgetsView {
                         .child(
                             h_flex()
                                 .justify_between()
-                                .child(div().font_weight(FontWeight::MEDIUM).child(status.category.name.clone()))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(status.category.name.clone()),
+                                )
                                 .child(
                                     div()
                                         .text_sm()
-                                        .text_color(if over { theme.danger } else { theme.muted_foreground })
+                                        .text_color(if over {
+                                            theme.danger
+                                        } else {
+                                            theme.muted_foreground
+                                        })
                                         .child(detail),
                                 ),
                         )
                         .child(
-                            Progress::new(SharedString::from(format!("progress-{}", status.category.id)))
-                                .value(status.used_fraction() * 100.0)
-                                .color(bar_color),
+                            Progress::new(SharedString::from(format!(
+                                "progress-{}",
+                                status.category.id
+                            )))
+                            .value(status.used_fraction() * 100.0)
+                            .color(bar_color),
                         ),
                 )
                 .children(self.inputs.get(&status.category.id).map(|input| {
