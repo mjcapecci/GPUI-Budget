@@ -1,9 +1,9 @@
 use chrono::NaiveDate;
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::*;
 use gpui_kit::component::*;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -48,7 +48,10 @@ fn category_items(categories: &[Category]) -> Vec<OptionItem> {
 fn payment_method_items(payment_methods: &[PaymentMethod]) -> Vec<OptionItem> {
     payment_methods
         .iter()
-        .map(|p| OptionItem { id: p.id, title: p.name.clone().into() })
+        .map(|p| OptionItem {
+            id: p.id,
+            title: p.name.clone().into(),
+        })
         .collect()
 }
 
@@ -102,11 +105,9 @@ impl TransactionsView {
         });
         let amount = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
         let note = cx.new(|cx| InputState::new(window, cx).placeholder("Note (optional)"));
-        let category =
-            cx.new(|cx| SelectState::new(category_items(&categories), None, window, cx));
-        let payment_method = cx.new(|cx| {
-            SelectState::new(payment_method_items(&payment_methods), None, window, cx)
-        });
+        let category = cx.new(|cx| SelectState::new(category_items(&categories), None, window, cx));
+        let payment_method =
+            cx.new(|cx| SelectState::new(payment_method_items(&payment_methods), None, window, cx));
 
         let mut subscriptions = Vec::new();
         for input in [&date, &amount, &note] {
@@ -121,10 +122,11 @@ impl TransactionsView {
             ));
         }
         // Payment method is disabled while an income category is chosen.
-        subscriptions.push(cx.subscribe(
-            &category,
-            |_, _, _: &SelectEvent<Vec<OptionItem>>, cx| cx.notify(),
-        ));
+        subscriptions.push(
+            cx.subscribe(&category, |_, _, _: &SelectEvent<Vec<OptionItem>>, cx| {
+                cx.notify()
+            }),
+        );
         // When the month changes, move the default date of a fresh form into it.
         subscriptions.push(cx.observe_in(&state, window, |this, state, window, cx| {
             if state.read(cx).categories != this.categories {
@@ -217,7 +219,14 @@ impl TransactionsView {
     }
 
     fn start_edit(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(t) = self.state.read(cx).transactions.iter().find(|t| t.id == id).cloned() else {
+        let Some(t) = self
+            .state
+            .read(cx)
+            .transactions
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
+        else {
             return;
         };
         self.editing = Some(id);
@@ -226,15 +235,17 @@ impl TransactionsView {
             .update(cx, |i, cx| i.set_value(t.date.to_string(), window, cx));
         self.amount
             .update(cx, |i, cx| i.set_value(t.amount.to_plain(), window, cx));
-        self.note.update(cx, |i, cx| i.set_value(t.note, window, cx));
+        self.note
+            .update(cx, |i, cx| i.set_value(t.note, window, cx));
         self.category.update(cx, |s, cx| match t.category_id {
             Some(id) => s.set_selected_value(&id, window, cx),
             None => s.set_selected_index(None, window, cx),
         });
-        self.payment_method.update(cx, |s, cx| match t.payment_method_id {
-            Some(id) => s.set_selected_value(&id, window, cx),
-            None => s.set_selected_index(None, window, cx),
-        });
+        self.payment_method
+            .update(cx, |s, cx| match t.payment_method_id {
+                Some(id) => s.set_selected_value(&id, window, cx),
+                None => s.set_selected_index(None, window, cx),
+            });
         cx.notify();
     }
 
@@ -261,11 +272,11 @@ impl TransactionsView {
             .rounded_lg()
             .border_1()
             .border_color(cx.theme().border)
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(if editing { "Edit transaction" } else { "Add transaction" }),
-            )
+            .child(div().font_weight(FontWeight::MEDIUM).child(if editing {
+                "Edit transaction"
+            } else {
+                "Add transaction"
+            }))
             .child(
                 h_flex()
                     .gap_2()
@@ -336,12 +347,14 @@ impl TransactionsView {
                             .text_color(theme.muted_foreground)
                             .child(t.date.format("%b %-d, %Y").to_string()),
                     )
-                    .child(div().w(px(160.)).map(|this| match category {
-                        Some(c) => this.child(c.name.clone()),
-                        None => this
-                            .italic()
-                            .text_color(theme.muted_foreground)
-                            .child(UNASSIGNED),
+                    .child(div().w(px(160.)).map(|this| {
+                        match category {
+                            Some(c) => this.child(c.name.clone()),
+                            None => this
+                                .italic()
+                                .text_color(theme.muted_foreground)
+                                .child(UNASSIGNED),
+                        }
                     }))
                     .child(
                         div()
@@ -365,7 +378,11 @@ impl TransactionsView {
                             .w(px(110.))
                             .text_right()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(if is_income { theme.success } else { theme.foreground })
+                            .text_color(if is_income {
+                                theme.success
+                            } else {
+                                theme.foreground
+                            })
                             .child(if is_income {
                                 format!("+{}", t.amount)
                             } else {
@@ -393,8 +410,7 @@ impl TransactionsView {
                                         if this.editing == Some(id) {
                                             this.reset_form(window, cx);
                                         }
-                                        this.state
-                                            .update(cx, |s, cx| s.delete_transaction(id, cx));
+                                        this.state.update(cx, |s, cx| s.delete_transaction(id, cx));
                                     })),
                             ),
                     )

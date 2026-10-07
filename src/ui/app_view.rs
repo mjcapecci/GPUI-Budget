@@ -87,7 +87,13 @@ impl AppView {
                     .accessibility_label(page.label())
                     .child(div().flex_1().min_w_0().truncate().child(page.label()))
                     .w_full()
-                    .map(|b| if self.page == page { b.secondary() } else { b.ghost() })
+                    .map(|b| {
+                        if self.page == page {
+                            b.secondary()
+                        } else {
+                            b.ghost()
+                        }
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.page = page;
                         cx.notify();
@@ -104,7 +110,13 @@ impl AppView {
                 .label(label)
                 .flex_1()
                 .compact()
-                .map(|b| if mode.is_dark() == dark { b.secondary() } else { b.ghost() })
+                .map(|b| {
+                    if mode.is_dark() == dark {
+                        b.secondary()
+                    } else {
+                        b.ghost()
+                    }
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |s, cx| s.set_theme_mode(mode, cx));
                 }))
@@ -131,11 +143,15 @@ impl AppView {
                     .child(self.page.label()),
             )
             .child(div().flex_1())
-            .child(Button::new("prev-month").outline().label("‹").on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.state.update(cx, |s, cx| s.set_month(s.month.prev(), cx));
-                },
-            )))
+            .child(
+                Button::new("prev-month")
+                    .outline()
+                    .label("‹")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state
+                            .update(cx, |s, cx| s.set_month(s.month.prev(), cx));
+                    })),
+            )
             .child(
                 div()
                     .min_w(px(140.))
@@ -143,11 +159,15 @@ impl AppView {
                     .font_weight(FontWeight::MEDIUM)
                     .child(month.label()),
             )
-            .child(Button::new("next-month").outline().label("›").on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.state.update(cx, |s, cx| s.set_month(s.month.next(), cx));
-                },
-            )))
+            .child(
+                Button::new("next-month")
+                    .outline()
+                    .label("›")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state
+                            .update(cx, |s, cx| s.set_month(s.month.next(), cx));
+                    })),
+            )
     }
 }
 

@@ -1,7 +1,7 @@
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::*;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -59,12 +59,18 @@ impl CategoriesView {
         match validate_category_name(&text, &self.state.read(cx).categories) {
             Ok(name) => {
                 let kind = self.kind;
-                let unassigned = |s: &AppState| s.transaction_counts.get(&None).copied().unwrap_or(0);
+                let unassigned =
+                    |s: &AppState| s.transaction_counts.get(&None).copied().unwrap_or(0);
                 let before = unassigned(self.state.read(cx));
-                self.state.update(cx, |s, cx| s.add_category(name.clone(), kind, cx));
+                self.state
+                    .update(cx, |s, cx| s.add_category(name.clone(), kind, cx));
                 let restored = before.saturating_sub(unassigned(self.state.read(cx)));
                 self.notice = (restored > 0).then(|| {
-                    format!("Moved {} back into \"{name}\".", transactions_label(restored)).into()
+                    format!(
+                        "Moved {} back into \"{name}\".",
+                        transactions_label(restored)
+                    )
+                    .into()
                 });
                 self.form_error = None;
                 self.name.update(cx, |i, cx| i.set_value("", window, cx));
@@ -81,7 +87,13 @@ impl CategoriesView {
         let kind_button = |kind: CategoryKind, label: &'static str| {
             Button::new(label)
                 .label(label)
-                .map(|b| if self.kind == kind { b.secondary() } else { b.ghost() })
+                .map(|b| {
+                    if self.kind == kind {
+                        b.secondary()
+                    } else {
+                        b.ghost()
+                    }
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.kind = kind;
                     cx.notify();
@@ -123,7 +135,11 @@ impl CategoriesView {
             .iter()
             .map(|category| {
                 let id = category.id;
-                let count = state.transaction_counts.get(&Some(id)).copied().unwrap_or(0);
+                let count = state
+                    .transaction_counts
+                    .get(&Some(id))
+                    .copied()
+                    .unwrap_or(0);
                 let confirming = self.confirming == Some(id);
                 let kind = match category.kind {
                     CategoryKind::Income => "Income",
@@ -185,8 +201,19 @@ impl CategoriesView {
                     .border_b_1()
                     .border_color(theme.border)
                     .when(confirming, |this| this.bg(theme.list_active))
-                    .child(div().flex_1().min_w_0().truncate().child(category.name.clone()))
-                    .child(div().w(px(80.)).text_color(theme.muted_foreground).child(kind))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(category.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .w(px(80.))
+                            .text_color(theme.muted_foreground)
+                            .child(kind),
+                    )
                     .child(
                         div()
                             .w(px(120.))
