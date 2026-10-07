@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::progress::*;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::text_input;
 use crate::model::{Money, Month};
 use crate::state::AppState;
 
@@ -214,7 +215,7 @@ impl Render for BudgetsView {
                         .gap_1()
                         .items_center()
                         .child(div().text_color(theme.muted_foreground).child("$"))
-                        .child(Input::new(input).w(px(110.)))
+                        .child(text_input(input).w(px(110.)))
                 }))
         });
 

@@ -1,17 +1,18 @@
 use gpui_kit::component::button::*;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::categories::transactions_label;
+use super::text_input;
 use crate::model::{UNASSIGNED, validate_payment_method_name};
 use crate::state::AppState;
 
 /// Add and delete payment methods, such as credit cards.
 ///
-/// Works like the Categories page: deleting asks for confirmation, and its
+/// Works like the Categories settings: deleting asks for confirmation, and its
 /// transactions (in every month) lose their payment method until one with
 /// the same name is added again.
 pub struct PaymentMethodsView {
@@ -75,19 +76,15 @@ impl PaymentMethodsView {
     fn render_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_2()
-            .p_4()
-            .rounded_lg()
-            .border_1()
-            .border_color(cx.theme().border)
             .child(
                 div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Add payment method"),
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Payment methods"),
             )
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Input::new(&self.name).flex_1())
+                    .child(text_input(&self.name).flex_1())
                     .child(
                         Button::new("add-payment-method")
                             .primary()
@@ -199,6 +196,8 @@ impl PaymentMethodsView {
             .id("payment-methods-list")
             .flex_1()
             .min_h_0()
+            .border_t_1()
+            .border_color(theme.border)
             .overflow_y_scrollbar()
             .children(rows)
             .when(empty, |this| {
