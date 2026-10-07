@@ -3,7 +3,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{BudgetsView, CategoriesView, PaymentMethodsView, SummaryView, TransactionsView};
+use super::{BudgetsView, SettingsView, SummaryView, TransactionsView};
 use crate::state::AppState;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -11,27 +11,25 @@ enum Page {
     Transactions,
     Budgets,
     Summary,
-    Categories,
-    PaymentMethods,
+    Settings,
 }
 
 impl Page {
-    const ALL: [Page; 5] = [
-        Page::Transactions,
-        Page::Budgets,
-        Page::Summary,
-        Page::Categories,
-        Page::PaymentMethods,
-    ];
+    /// The pages listed at the top of the sidebar. Settings sits at the bottom.
+    const MAIN: [Page; 3] = [Page::Transactions, Page::Budgets, Page::Summary];
 
     fn label(self) -> &'static str {
         match self {
             Page::Transactions => "Transactions",
             Page::Budgets => "Budgets",
             Page::Summary => "Summary",
-            Page::Categories => "Categories",
-            Page::PaymentMethods => "Payment Methods",
+            Page::Settings => "Settings",
         }
+    }
+
+    /// Whether the page shows one month's data, so needs the month switcher.
+    fn is_monthly(self) -> bool {
+        self != Page::Settings
     }
 }
 
@@ -42,8 +40,7 @@ pub struct AppView {
     transactions: Entity<TransactionsView>,
     budgets: Entity<BudgetsView>,
     summary: Entity<SummaryView>,
-    categories: Entity<CategoriesView>,
-    payment_methods: Entity<PaymentMethodsView>,
+    settings: Entity<SettingsView>,
 }
 
 impl AppView {
@@ -57,11 +54,29 @@ impl AppView {
             transactions: cx.new(|cx| TransactionsView::new(state.clone(), window, cx)),
             budgets: cx.new(|cx| BudgetsView::new(state.clone(), window, cx)),
             summary: cx.new(|cx| SummaryView::new(state.clone(), cx)),
-            categories: cx.new(|cx| CategoriesView::new(state.clone(), window, cx)),
-            payment_methods: cx.new(|cx| PaymentMethodsView::new(state.clone(), window, cx)),
+            settings: cx.new(|cx| SettingsView::new(state.clone(), window, cx)),
             state,
             page: Page::Transactions,
         }
+    }
+
+    fn render_nav_button(&self, page: Page, cx: &mut Context<Self>) -> Button {
+        // Button centers its label, so pass it as a full-width child instead.
+        Button::new(page.label())
+            .accessibility_label(page.label())
+            .child(div().flex_1().min_w_0().truncate().child(page.label()))
+            .w_full()
+            .map(|b| {
+                if self.page == page {
+                    b.secondary()
+                } else {
+                    b.ghost()
+                }
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.page = page;
+                cx.notify();
+            }))
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -81,57 +96,16 @@ impl AppView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Budget"),
             )
-            .children(Page::ALL.map(|page| {
-                // Button centers its label, so pass it as a full-width child instead.
-                Button::new(page.label())
-                    .accessibility_label(page.label())
-                    .child(div().flex_1().min_w_0().truncate().child(page.label()))
-                    .w_full()
-                    .map(|b| {
-                        if self.page == page {
-                            b.secondary()
-                        } else {
-                            b.ghost()
-                        }
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.page = page;
-                        cx.notify();
-                    }))
-            }))
+            .children(Page::MAIN.map(|page| self.render_nav_button(page, cx)))
             .child(div().flex_1())
-            .child(self.render_theme_toggle(cx))
-    }
-
-    fn render_theme_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let dark = cx.theme().is_dark();
-        let option = |mode: ThemeMode, label: &'static str| {
-            Button::new(label)
-                .label(label)
-                .flex_1()
-                .compact()
-                .map(|b| {
-                    if mode.is_dark() == dark {
-                        b.secondary()
-                    } else {
-                        b.ghost()
-                    }
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.update(cx, |s, cx| s.set_theme_mode(mode, cx));
-                }))
-        };
-        h_flex()
-            .gap_1()
-            .child(option(ThemeMode::Light, "Light"))
-            .child(option(ThemeMode::Dark, "Dark"))
+            .child(self.render_nav_button(Page::Settings, cx))
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let month = self.state.read(cx).month;
         h_flex()
+            .h(px(57.))
+            .flex_none()
             .px_6()
-            .py_3()
             .gap_3()
             .items_center()
             .border_b_1()
@@ -143,6 +117,16 @@ impl AppView {
                     .child(self.page.label()),
             )
             .child(div().flex_1())
+            .when(self.page.is_monthly(), |this| {
+                this.child(self.render_month_switcher(cx))
+            })
+    }
+
+    fn render_month_switcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let month = self.state.read(cx).month;
+        h_flex()
+            .gap_3()
+            .items_center()
             .child(
                 Button::new("prev-month")
                     .outline()
@@ -178,8 +162,7 @@ impl Render for AppView {
             Page::Transactions => self.transactions.clone().into(),
             Page::Budgets => self.budgets.clone().into(),
             Page::Summary => self.summary.clone().into(),
-            Page::Categories => self.categories.clone().into(),
-            Page::PaymentMethods => self.payment_methods.clone().into(),
+            Page::Settings => self.settings.clone().into(),
         };
 
         h_flex()

@@ -1,16 +1,114 @@
-use chrono::NaiveDate;
+use chrono::{Days, Local};
 use gpui_kit::component::button::*;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::date_picker::{DatePicker, DatePickerState, DateRangePreset};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::*;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use std::cmp::Ordering;
+
+use super::{field, text_input, truncated_text};
 use crate::model::{
-    Category, CategoryKind, Money, Month, PaymentMethod, TransactionInput, UNASSIGNED,
+    Category, CategoryKind, Money, Month, PaymentMethod, Transaction, TransactionInput, UNASSIGNED,
 };
 use crate::state::AppState;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortColumn {
+    Date,
+    Category,
+    PaymentMethod,
+    Note,
+    Amount,
+}
+
+/// How the transaction list is ordered. Click a column header to sort by it,
+/// click it again to reverse.
+#[derive(Clone, Copy)]
+struct Sort {
+    column: SortColumn,
+    descending: bool,
+}
+
+impl Default for Sort {
+    /// Newest first, matching the order transactions are loaded in.
+    fn default() -> Self {
+        Self {
+            column: SortColumn::Date,
+            descending: true,
+        }
+    }
+}
+
+impl Sort {
+    /// Sort by `column`, or reverse the direction if already sorted by it.
+    /// Dates and amounts start out largest first, text columns A to Z.
+    fn toggle(self, column: SortColumn) -> Self {
+        if self.column == column {
+            Self {
+                column,
+                descending: !self.descending,
+            }
+        } else {
+            Self {
+                column,
+                descending: matches!(column, SortColumn::Date | SortColumn::Amount),
+            }
+        }
+    }
+
+    /// Order two transactions. Blank text values (no payment method, no note,
+    /// unassigned category) always go last, whatever the direction.
+    fn compare(self, state: &AppState, a: &Transaction, b: &Transaction) -> Ordering {
+        let text = |a: Option<String>, b: Option<String>| match (a, b) {
+            (Some(a), Some(b)) => self.directed(a.to_lowercase().cmp(&b.to_lowercase())),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        };
+        let category = |t: &Transaction| {
+            t.category_id
+                .and_then(|id| state.category(id))
+                .map(|c| c.name.clone())
+        };
+        let payment_method = |t: &Transaction| {
+            t.payment_method_id
+                .and_then(|id| state.payment_method(id))
+                .map(|p| p.name.clone())
+        };
+        let note = |t: &Transaction| Some(t.note.clone()).filter(|n| !n.trim().is_empty());
+        // Income counts as positive and expenses as negative, as displayed.
+        let signed = |t: &Transaction| {
+            if state.kind_of(t) == Some(CategoryKind::Income) {
+                t.amount.0
+            } else {
+                -t.amount.0
+            }
+        };
+
+        match self.column {
+            SortColumn::Date => self.directed(a.date.cmp(&b.date)),
+            SortColumn::Category => text(category(a), category(b)),
+            SortColumn::PaymentMethod => text(payment_method(a), payment_method(b)),
+            SortColumn::Note => text(note(a), note(b)),
+            SortColumn::Amount => self.directed(signed(a).cmp(&signed(b))),
+        }
+    }
+
+    fn directed(self, ordering: Ordering) -> Ordering {
+        if self.descending {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    }
+}
+
+/// Width of the Delete button column, so the header lines up with rows.
+const ACTIONS_WIDTH: Pixels = px(70.);
 
 /// A category or payment method option in one of the form's dropdowns.
 #[derive(Clone)]
@@ -31,8 +129,8 @@ impl SelectItem for OptionItem {
     }
 }
 
-fn category_items(categories: &[Category]) -> Vec<OptionItem> {
-    categories
+fn category_items(categories: &[Category]) -> SearchableVec<OptionItem> {
+    let items: Vec<OptionItem> = categories
         .iter()
         .map(|c| OptionItem {
             id: c.id,
@@ -42,23 +140,25 @@ fn category_items(categories: &[Category]) -> Vec<OptionItem> {
             }
             .into(),
         })
-        .collect()
+        .collect();
+    SearchableVec::new(items)
 }
 
-fn payment_method_items(payment_methods: &[PaymentMethod]) -> Vec<OptionItem> {
-    payment_methods
+fn payment_method_items(payment_methods: &[PaymentMethod]) -> SearchableVec<OptionItem> {
+    let items: Vec<OptionItem> = payment_methods
         .iter()
         .map(|p| OptionItem {
             id: p.id,
             title: p.name.clone().into(),
         })
-        .collect()
+        .collect();
+    SearchableVec::new(items)
 }
 
 /// Replace a dropdown's options, keeping the selection if it still exists.
 fn set_options(
-    select: &Entity<SelectState<Vec<OptionItem>>>,
-    items: Vec<OptionItem>,
+    select: &Entity<SelectState<SearchableVec<OptionItem>>>,
+    items: SearchableVec<OptionItem>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -72,15 +172,25 @@ fn set_options(
     });
 }
 
+/// Quick picks shown beside the date picker's calendar.
+fn date_presets() -> Vec<DateRangePreset> {
+    let today = Local::now().date_naive();
+    let mut presets = vec![DateRangePreset::single("Today", today)];
+    if let Some(yesterday) = today.checked_sub_days(Days::new(1)) {
+        presets.push(DateRangePreset::single("Yesterday", yesterday));
+    }
+    presets
+}
+
 /// The month's transactions with an add/edit form above the list.
 pub struct TransactionsView {
     state: Entity<AppState>,
-    date: Entity<InputState>,
+    date: Entity<DatePickerState>,
     amount: Entity<InputState>,
     note: Entity<InputState>,
-    category: Entity<SelectState<Vec<OptionItem>>>,
+    category: Entity<SelectState<SearchableVec<OptionItem>>>,
     /// Optional, and only used for expenses.
-    payment_method: Entity<SelectState<Vec<OptionItem>>>,
+    payment_method: Entity<SelectState<SearchableVec<OptionItem>>>,
     /// The transaction being edited, or `None` when adding a new one.
     editing: Option<i64>,
     form_error: Option<SharedString>,
@@ -89,6 +199,7 @@ pub struct TransactionsView {
     categories: Vec<Category>,
     /// The payment methods the dropdown was last built from.
     payment_methods: Vec<PaymentMethod>,
+    sort: Sort,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -99,18 +210,22 @@ impl TransactionsView {
         let payment_methods = state.read(cx).payment_methods.clone();
 
         let date = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("YYYY-MM-DD")
-                .default_value(month.default_entry_date().to_string())
+            let mut picker = DatePickerState::new(window, cx).date_format("%a, %b %-d, %Y");
+            picker.set_date(month.default_entry_date(), window, cx);
+            picker
         });
         let amount = cx.new(|cx| InputState::new(window, cx).placeholder("0.00"));
         let note = cx.new(|cx| InputState::new(window, cx).placeholder("Note (optional)"));
-        let category = cx.new(|cx| SelectState::new(category_items(&categories), None, window, cx));
-        let payment_method =
-            cx.new(|cx| SelectState::new(payment_method_items(&payment_methods), None, window, cx));
+        let category = cx.new(|cx| {
+            SelectState::new(category_items(&categories), None, window, cx).searchable(true)
+        });
+        let payment_method = cx.new(|cx| {
+            SelectState::new(payment_method_items(&payment_methods), None, window, cx)
+                .searchable(true)
+        });
 
         let mut subscriptions = Vec::new();
-        for input in [&date, &amount, &note] {
+        for input in [&amount, &note] {
             subscriptions.push(cx.subscribe_in(
                 input,
                 window,
@@ -122,11 +237,10 @@ impl TransactionsView {
             ));
         }
         // Payment method is disabled while an income category is chosen.
-        subscriptions.push(
-            cx.subscribe(&category, |_, _, _: &SelectEvent<Vec<OptionItem>>, cx| {
-                cx.notify()
-            }),
-        );
+        subscriptions.push(cx.subscribe(
+            &category,
+            |_, _, _: &SelectEvent<SearchableVec<OptionItem>>, cx| cx.notify(),
+        ));
         // When the month changes, move the default date of a fresh form into it.
         subscriptions.push(cx.observe_in(&state, window, |this, state, window, cx| {
             if state.read(cx).categories != this.categories {
@@ -142,8 +256,8 @@ impl TransactionsView {
             if month != this.month {
                 this.month = month;
                 if this.editing.is_none() {
-                    this.date.update(cx, |input, cx| {
-                        input.set_value(month.default_entry_date().to_string(), window, cx)
+                    this.date.update(cx, |picker, cx| {
+                        picker.set_date(month.default_entry_date(), window, cx)
                     });
                 }
             }
@@ -162,6 +276,7 @@ impl TransactionsView {
             month,
             categories,
             payment_methods,
+            sort: Sort::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -176,9 +291,7 @@ impl TransactionsView {
     }
 
     fn read_form(&self, cx: &App) -> Result<TransactionInput, &'static str> {
-        let date = self.date.read(cx).value();
-        let date = NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d")
-            .map_err(|_| "Enter the date as YYYY-MM-DD.")?;
+        let date = self.date.read(cx).date().start().ok_or("Choose a date.")?;
         let category_id = *self
             .category
             .read(cx)
@@ -232,7 +345,7 @@ impl TransactionsView {
         self.editing = Some(id);
         self.form_error = None;
         self.date
-            .update(cx, |i, cx| i.set_value(t.date.to_string(), window, cx));
+            .update(cx, |picker, cx| picker.set_date(t.date, window, cx));
         self.amount
             .update(cx, |i, cx| i.set_value(t.amount.to_plain(), window, cx));
         self.note
@@ -253,8 +366,9 @@ impl TransactionsView {
     /// are kept when adding, since consecutive entries often share them.
     fn reset_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.editing.take().is_some() {
-            let date = self.month.default_entry_date().to_string();
-            self.date.update(cx, |i, cx| i.set_value(date, window, cx));
+            let date = self.month.default_entry_date();
+            self.date
+                .update(cx, |picker, cx| picker.set_date(date, window, cx));
         }
         self.form_error = None;
         self.amount.update(cx, |i, cx| i.set_value("", window, cx));
@@ -279,54 +393,135 @@ impl TransactionsView {
             }))
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(Input::new(&self.date).w(px(120.)))
+                    .gap_3()
+                    .child(field("Amount", text_input(&self.amount), cx).w(px(120.)))
                     .child(
-                        div()
-                            .w(px(200.))
-                            .child(Select::new(&self.category).placeholder("Category")),
+                        field(
+                            "Category",
+                            Select::new(&self.category)
+                                .placeholder("Choose a category")
+                                .search_placeholder("Search categories"),
+                            cx,
+                        )
+                        .flex_1()
+                        .min_w_0(),
                     )
                     .child(
-                        div().w(px(200.)).child(
+                        field(
+                            "Payment method",
                             Select::new(&self.payment_method)
                                 .placeholder(if income {
-                                    "No payment method for income"
+                                    "Not used for income"
                                 } else {
-                                    "Payment method"
+                                    "None"
                                 })
+                                .search_placeholder("Search payment methods")
                                 .cleanable(true)
                                 .disabled(income),
-                        ),
+                            cx,
+                        )
+                        .flex_1()
+                        .min_w_0(),
                     )
-                    .child(Input::new(&self.amount).w(px(110.))),
+                    .child(
+                        field(
+                            "Date",
+                            DatePicker::new(&self.date).presets(date_presets()),
+                            cx,
+                        )
+                        .w(px(190.)),
+                    ),
             )
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(Input::new(&self.note).flex_1())
+                    .gap_3()
+                    .items_end()
+                    .child(field("Note", text_input(&self.note), cx).flex_1())
+                    .when(editing, |this| {
+                        this.child(Button::new("cancel").ghost().label("Cancel").on_click(
+                            cx.listener(|this, _, window, cx| this.reset_form(window, cx)),
+                        ))
+                    })
                     .child(
                         Button::new("submit")
                             .primary()
                             .label(if editing { "Save" } else { "Add" })
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
-                    )
-                    .when(editing, |this| {
-                        this.child(Button::new("cancel").ghost().label("Cancel").on_click(
-                            cx.listener(|this, _, window, cx| this.reset_form(window, cx)),
-                        ))
-                    }),
+                    ),
             )
             .when_some(self.form_error.clone(), |this, error| {
                 this.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
     }
 
+    /// A clickable column header showing an arrow when the list is sorted by it.
+    fn render_header_cell(
+        &self,
+        column: SortColumn,
+        label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let arrow = (self.sort.column == column).then_some(if self.sort.descending {
+            "▼"
+        } else {
+            "▲"
+        });
+        h_flex()
+            .id(label)
+            .gap_1()
+            .cursor_pointer()
+            .hover(|this| this.text_color(cx.theme().foreground))
+            .when(column == SortColumn::Amount, |this| this.justify_end())
+            .child(label)
+            .children(arrow.map(|a| div().text_xs().child(a)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.sort = this.sort.toggle(column);
+                cx.notify();
+            }))
+    }
+
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_4()
+            .px_3()
+            .py_2()
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(cx.theme().muted_foreground)
+            .child(
+                self.render_header_cell(SortColumn::Date, "Date", cx)
+                    .w(px(100.)),
+            )
+            .child(
+                self.render_header_cell(SortColumn::Category, "Category", cx)
+                    .w(px(160.)),
+            )
+            .child(
+                self.render_header_cell(SortColumn::PaymentMethod, "Payment method", cx)
+                    .w(px(140.)),
+            )
+            .child(
+                self.render_header_cell(SortColumn::Note, "Note", cx)
+                    .flex_1(),
+            )
+            .child(
+                self.render_header_cell(SortColumn::Amount, "Amount", cx)
+                    .w(px(110.)),
+            )
+            .child(div().w(ACTIONS_WIDTH))
+    }
+
     fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
         let theme = cx.theme();
-        let rows: Vec<AnyElement> = state
-            .transactions
-            .iter()
+        let mut transactions: Vec<&Transaction> = state.transactions.iter().collect();
+        // Stable, so ties keep the loaded newest-first order.
+        transactions.sort_by(|a, b| self.sort.compare(state, a, b));
+        let rows: Vec<AnyElement> = transactions
+            .into_iter()
             .map(|t| {
                 let id = t.id;
                 let category = t.category_id.and_then(|id| state.category(id));
@@ -340,39 +535,37 @@ impl TransactionsView {
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)
+                    .cursor_pointer()
+                    .hover(|this| this.bg(theme.list_hover))
                     .when(selected, |this| this.bg(theme.list_active))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.start_edit(id, window, cx)),
+                    )
                     .child(
                         div()
                             .w(px(100.))
                             .text_color(theme.muted_foreground)
                             .child(t.date.format("%b %-d, %Y").to_string()),
                     )
-                    .child(div().w(px(160.)).map(|this| {
-                        match category {
-                            Some(c) => this.child(c.name.clone()),
-                            None => this
-                                .italic()
-                                .text_color(theme.muted_foreground)
-                                .child(UNASSIGNED),
-                        }
-                    }))
+                    .child(match category {
+                        Some(c) => truncated_text("category", c.name.clone()).w(px(160.)),
+                        None => truncated_text("category", UNASSIGNED)
+                            .w(px(160.))
+                            .italic()
+                            .text_color(theme.muted_foreground),
+                    })
                     .child(
-                        div()
-                            .w(px(140.))
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.muted_foreground)
-                            .map(|this| {
-                                match t.payment_method_id.and_then(|id| state.payment_method(id)) {
-                                    Some(p) => this.child(p.name.clone()),
-                                    None if t.previous_payment_method.is_some() => {
-                                        this.italic().child(UNASSIGNED)
-                                    }
-                                    None => this,
-                                }
-                            }),
+                        match t.payment_method_id.and_then(|id| state.payment_method(id)) {
+                            Some(p) => truncated_text("payment-method", p.name.clone()),
+                            None if t.previous_payment_method.is_some() => {
+                                truncated_text("payment-method", UNASSIGNED).italic()
+                            }
+                            None => truncated_text("payment-method", ""),
+                        }
+                        .w(px(140.))
+                        .text_color(theme.muted_foreground),
                     )
-                    .child(div().flex_1().min_w_0().truncate().child(t.note.clone()))
+                    .child(truncated_text("note", t.note.clone()).flex_1())
                     .child(
                         div()
                             .w(px(110.))
@@ -390,29 +583,20 @@ impl TransactionsView {
                             }),
                     )
                     .child(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Button::new(SharedString::from(format!("edit-{id}")))
-                                    .ghost()
-                                    .compact()
-                                    .label("Edit")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.start_edit(id, window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("delete-{id}")))
-                                    .ghost()
-                                    .compact()
-                                    .label("Delete")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if this.editing == Some(id) {
-                                            this.reset_form(window, cx);
-                                        }
-                                        this.state.update(cx, |s, cx| s.delete_transaction(id, cx));
-                                    })),
-                            ),
+                        h_flex().w(ACTIONS_WIDTH).justify_end().gap_1().child(
+                            Button::new(SharedString::from(format!("delete-{id}")))
+                                .ghost()
+                                .compact()
+                                .label("Delete")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    // Don't also open the row for editing.
+                                    cx.stop_propagation();
+                                    if this.editing == Some(id) {
+                                        this.reset_form(window, cx);
+                                    }
+                                    this.state.update(cx, |s, cx| s.delete_transaction(id, cx));
+                                })),
+                        ),
                     )
                     .into_any_element()
             })
@@ -434,6 +618,15 @@ impl TransactionsView {
                         .child("No transactions this month yet."),
                 )
             })
+            .when(!empty, |this| {
+                this.child(
+                    div()
+                        .p_3()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Click a transaction to edit it."),
+                )
+            })
     }
 }
 
@@ -444,6 +637,12 @@ impl Render for TransactionsView {
             .p_6()
             .gap_4()
             .child(self.render_form(cx))
-            .child(self.render_list(cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_header(cx))
+                    .child(self.render_list(cx)),
+            )
     }
 }
