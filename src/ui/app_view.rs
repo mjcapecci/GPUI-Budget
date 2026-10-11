@@ -3,12 +3,13 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{BudgetsView, SettingsView, SummaryView, TransactionsView};
+use super::{BudgetsView, ImportView, SettingsView, SummaryView, TransactionsView};
 use crate::state::AppState;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Transactions,
+    Import,
     Budgets,
     Summary,
     Settings,
@@ -16,11 +17,17 @@ enum Page {
 
 impl Page {
     /// The pages listed at the top of the sidebar. Settings sits at the bottom.
-    const MAIN: [Page; 3] = [Page::Transactions, Page::Budgets, Page::Summary];
+    const MAIN: [Page; 4] = [
+        Page::Transactions,
+        Page::Import,
+        Page::Budgets,
+        Page::Summary,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Page::Transactions => "Transactions",
+            Page::Import => "Import",
             Page::Budgets => "Budgets",
             Page::Summary => "Summary",
             Page::Settings => "Settings",
@@ -29,7 +36,7 @@ impl Page {
 
     /// Whether the page shows one month's data, so needs the month switcher.
     fn is_monthly(self) -> bool {
-        self != Page::Settings
+        !matches!(self, Page::Import | Page::Settings)
     }
 }
 
@@ -38,6 +45,7 @@ pub struct AppView {
     state: Entity<AppState>,
     page: Page,
     transactions: Entity<TransactionsView>,
+    import: Entity<ImportView>,
     budgets: Entity<BudgetsView>,
     summary: Entity<SummaryView>,
     settings: Entity<SettingsView>,
@@ -52,6 +60,7 @@ impl AppView {
         }
         Self {
             transactions: cx.new(|cx| TransactionsView::new(state.clone(), window, cx)),
+            import: cx.new(|cx| ImportView::new(state.clone(), window, cx)),
             budgets: cx.new(|cx| BudgetsView::new(state.clone(), window, cx)),
             summary: cx.new(|cx| SummaryView::new(state.clone(), cx)),
             settings: cx.new(|cx| SettingsView::new(state.clone(), window, cx)),
@@ -73,8 +82,11 @@ impl AppView {
                     b.ghost()
                 }
             })
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
                 this.page = page;
+                if page == Page::Import {
+                    this.import.update(cx, |v, cx| v.focus(window, cx));
+                }
                 cx.notify();
             }))
     }
@@ -160,6 +172,7 @@ impl Render for AppView {
         let error = self.state.read(cx).error.clone();
         let page: AnyView = match self.page {
             Page::Transactions => self.transactions.clone().into(),
+            Page::Import => self.import.clone().into(),
             Page::Budgets => self.budgets.clone().into(),
             Page::Summary => self.summary.clone().into(),
             Page::Settings => self.settings.clone().into(),
