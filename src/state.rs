@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 
 use crate::db::Db;
+use crate::import::{API_KEY_ENV, API_KEY_SETTING};
 use crate::model::{
     Category, CategoryKind, CategoryStatus, Money, Month, MonthSummary, PaymentMethod,
     PaymentMethodSpending, Transaction, TransactionInput,
@@ -106,6 +108,54 @@ impl AppState {
     pub fn set_budget(&mut self, category_id: i64, limit: Option<Money>, cx: &mut Context<Self>) {
         let month = self.month;
         self.apply(cx, |db| db.set_budget(category_id, month, limit));
+    }
+
+    /// Add the reviewed transactions from an import, all or none. Returns
+    /// whether they were saved.
+    pub fn import_transactions(
+        &mut self,
+        inputs: Vec<TransactionInput>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.apply(cx, |db| db.import_transactions(&inputs));
+        self.error.is_none()
+    }
+
+    /// The category last imported for this merchant.
+    pub fn merchant_category(&self, merchant: &str) -> Option<i64> {
+        self.db.merchant_category(merchant).ok().flatten()
+    }
+
+    /// An existing transaction an imported one may duplicate: the same
+    /// amount within a few days, since posting dates can lag.
+    pub fn similar_transaction(&self, date: NaiveDate, amount: Money) -> Option<Transaction> {
+        self.db.similar_transaction(date, amount, 3).ok().flatten()
+    }
+
+    /// The key saved in Settings, if any.
+    pub fn saved_api_key(&self) -> Option<String> {
+        self.db
+            .setting(API_KEY_SETTING)
+            .ok()
+            .flatten()
+            .filter(|k| !k.is_empty())
+    }
+
+    /// The Anthropic API key for reading screenshots: the saved one, or the
+    /// `ANTHROPIC_API_KEY` environment variable.
+    pub fn api_key(&self) -> Option<String> {
+        self.saved_api_key().or_else(|| {
+            std::env::var(API_KEY_ENV)
+                .ok()
+                .filter(|k| !k.trim().is_empty())
+        })
+    }
+
+    /// Save the API key, or remove it when empty.
+    pub fn set_api_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        let result = self.db.set_setting(API_KEY_SETTING, key.trim());
+        self.record(result);
+        cx.notify();
     }
 
     /// The light/dark choice saved by the user, or `None` to follow the system.

@@ -1,6 +1,7 @@
 mod app_view;
 mod budgets;
 mod categories;
+mod import;
 mod payment_methods;
 mod settings;
 mod summary;
@@ -9,6 +10,7 @@ mod transactions;
 pub use app_view::AppView;
 pub use budgets::BudgetsView;
 pub use categories::CategoriesView;
+pub use import::{ImportView, bind_keys};
 pub use payment_methods::PaymentMethodsView;
 pub use settings::SettingsView;
 pub use summary::SummaryView;

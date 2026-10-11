@@ -75,6 +75,12 @@ const MIGRATIONS: &[&str] = &[
     );
     ALTER TABLE transactions ADD COLUMN payment_method_id INTEGER REFERENCES payment_methods(id);
     ALTER TABLE transactions ADD COLUMN previous_payment_method_name TEXT;",
+    // v5: the category last chosen for each merchant when importing
+    // screenshots, keyed by the lowercased merchant name.
+    "CREATE TABLE merchant_categories (
+        merchant    TEXT PRIMARY KEY,
+        category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE
+    );",
 ];
 
 pub struct Db {
@@ -336,6 +342,65 @@ impl Db {
         Ok(())
     }
 
+    // MARK: Import
+
+    /// Add several transactions at once, all or none, and remember the
+    /// category chosen for each note so the next import can suggest it.
+    pub fn import_transactions(&self, inputs: &[TransactionInput]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for t in inputs {
+            self.add_transaction(t)?;
+            let merchant = merchant_key(&t.note);
+            if !merchant.is_empty() {
+                tx.execute(
+                    "INSERT INTO merchant_categories (merchant, category_id) VALUES (?1, ?2)
+                     ON CONFLICT (merchant) DO UPDATE SET category_id = excluded.category_id",
+                    params![merchant, t.category_id],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The category last imported for a merchant, if it still exists.
+    pub fn merchant_category(&self, merchant: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT category_id FROM merchant_categories WHERE merchant = ?1",
+                [merchant_key(merchant)],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// An existing transaction for the same amount within `days` of `date`,
+    /// in any month, that an imported one may duplicate. The closest by date
+    /// is returned.
+    pub fn similar_transaction(
+        &self,
+        date: NaiveDate,
+        amount: Money,
+        days: u64,
+    ) -> Result<Option<Transaction>> {
+        let from = date - chrono::Days::new(days);
+        let to = date + chrono::Days::new(days);
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, date, amount_cents, category_id, note,
+                        previous_category_name, previous_category_kind,
+                        payment_method_id, previous_payment_method_name FROM transactions
+                 WHERE amount_cents = ?1 AND date BETWEEN ?2 AND ?3
+                 ORDER BY abs(julianday(date) - julianday(?4)), id DESC
+                 LIMIT 1",
+                params![amount.0, from.to_string(), to.to_string(), date.to_string()],
+                row_to_transaction,
+            )
+            .optional()?)
+    }
+
     // MARK: Budgets
 
     /// Set the monthly budget for a category. `None` removes it.
@@ -482,6 +547,12 @@ fn backup(conn: &Connection, path: &Path, version: i64) -> Result<()> {
     conn.execute("VACUUM INTO ?1", [dest.to_string_lossy()])
         .with_context(|| format!("backing up database to {}", dest.display()))?;
     Ok(())
+}
+
+/// How a merchant is looked up in `merchant_categories`: trimmed and
+/// lowercased, so "Trader Joe's" and "TRADER JOE'S" match.
+fn merchant_key(merchant: &str) -> String {
+    merchant.trim().to_lowercase()
 }
 
 fn row_to_transaction(r: &Row) -> rusqlite::Result<Transaction> {
@@ -880,6 +951,71 @@ mod tests {
             db.payment_method_counts().unwrap().get(&Some(visa)),
             Some(&2)
         );
+    }
+
+    fn import(db: &Db, d: &str, cents: i64, cat: &str, note: &str) -> TransactionInput {
+        TransactionInput {
+            date: date(d),
+            amount: Money(cents),
+            category_id: category(db, cat),
+            payment_method_id: None,
+            note: note.into(),
+        }
+    }
+
+    #[test]
+    fn importing_remembers_each_merchants_category() {
+        let db = Db::open_in_memory().unwrap();
+        db.import_transactions(&[
+            import(&db, "2026-10-02", 4500, "Groceries", "Trader Joe's"),
+            import(&db, "2026-10-03", 1200, "Dining Out", "Blue Bottle"),
+            import(&db, "2026-10-04", 800, "Other", ""),
+        ])
+        .unwrap();
+        assert_eq!(db.transactions_in(OCT).unwrap().len(), 3);
+        assert_eq!(
+            db.merchant_category(" TRADER JOE'S ").unwrap(),
+            Some(category(&db, "Groceries"))
+        );
+        assert_eq!(db.merchant_category("").unwrap(), None);
+
+        // The latest choice wins, and deleting the category forgets it.
+        db.import_transactions(&[import(&db, "2026-10-05", 900, "Other", "Blue Bottle")])
+            .unwrap();
+        let other = category(&db, "Other");
+        assert_eq!(db.merchant_category("blue bottle").unwrap(), Some(other));
+        db.delete_category(other).unwrap();
+        assert_eq!(db.merchant_category("blue bottle").unwrap(), None);
+    }
+
+    #[test]
+    fn a_failed_import_adds_nothing() {
+        let db = Db::open_in_memory().unwrap();
+        let mut bad = import(&db, "2026-10-03", 100, "Groceries", "Bad");
+        bad.category_id = 9999;
+        let good = import(&db, "2026-10-02", 100, "Groceries", "Good");
+        assert!(db.import_transactions(&[good, bad]).is_err());
+        assert!(db.transactions_in(OCT).unwrap().is_empty());
+        assert_eq!(db.merchant_category("good").unwrap(), None);
+    }
+
+    #[test]
+    fn finds_the_closest_transaction_with_the_same_amount() {
+        let db = Db::open_in_memory().unwrap();
+        add(&db, "2026-09-29", 1500, "Groceries");
+        let near = add(&db, "2026-10-02", 1500, "Dining Out");
+        add(&db, "2026-10-01", 1499, "Groceries");
+
+        let found = |d: &str, cents| {
+            db.similar_transaction(date(d), Money(cents), 2)
+                .unwrap()
+                .map(|t| t.id)
+        };
+        assert_eq!(found("2026-10-01", 1500), Some(near));
+        assert_eq!(found("2026-10-05", 1500), None);
+        assert_eq!(found("2026-10-01", 1600), None);
+        // Searches across months.
+        assert!(found("2026-09-30", 1500).is_some());
     }
 
     #[test]

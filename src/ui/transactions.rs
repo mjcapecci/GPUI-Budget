@@ -112,7 +112,7 @@ const ACTIONS_WIDTH: Pixels = px(70.);
 
 /// A category or payment method option in one of the form's dropdowns.
 #[derive(Clone)]
-pub struct OptionItem {
+pub(super) struct OptionItem {
     id: i64,
     title: SharedString,
 }
@@ -129,7 +129,7 @@ impl SelectItem for OptionItem {
     }
 }
 
-fn category_items(categories: &[Category]) -> SearchableVec<OptionItem> {
+pub(super) fn category_items(categories: &[Category]) -> SearchableVec<OptionItem> {
     let items: Vec<OptionItem> = categories
         .iter()
         .map(|c| OptionItem {
@@ -144,7 +144,7 @@ fn category_items(categories: &[Category]) -> SearchableVec<OptionItem> {
     SearchableVec::new(items)
 }
 
-fn payment_method_items(payment_methods: &[PaymentMethod]) -> SearchableVec<OptionItem> {
+pub(super) fn payment_method_items(payment_methods: &[PaymentMethod]) -> SearchableVec<OptionItem> {
     let items: Vec<OptionItem> = payment_methods
         .iter()
         .map(|p| OptionItem {
@@ -156,7 +156,7 @@ fn payment_method_items(payment_methods: &[PaymentMethod]) -> SearchableVec<Opti
 }
 
 /// Replace a dropdown's options, keeping the selection if it still exists.
-fn set_options(
+pub(super) fn set_options(
     select: &Entity<SelectState<SearchableVec<OptionItem>>>,
     items: SearchableVec<OptionItem>,
     window: &mut Window,

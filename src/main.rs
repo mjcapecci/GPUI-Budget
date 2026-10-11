@@ -1,4 +1,5 @@
 mod db;
+mod import;
 mod model;
 mod state;
 mod ui;
@@ -27,6 +28,7 @@ fn main() -> Result<()> {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            ui::bind_keys(cx);
 
             let state = cx.new(|_| AppState::new(db));
             let options = WindowOptions {
