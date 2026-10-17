@@ -3,7 +3,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{BudgetsView, ImportView, SettingsView, SummaryView, TransactionsView};
+use super::{BudgetsView, ImportView, SettingsView, ShowCategory, SummaryView, TransactionsView};
 use crate::state::AppState;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -58,15 +58,42 @@ impl AppView {
             Some(mode) => Theme::change(mode, Some(window), cx),
             None => Theme::sync_system_appearance(Some(window), cx),
         }
+        let budgets = cx.new(|cx| BudgetsView::new(state.clone(), window, cx));
+        let summary = cx.new(|cx| SummaryView::new(state.clone(), cx));
+        cx.subscribe_in(
+            &budgets,
+            window,
+            |this, _, ShowCategory(category), window, cx| this.show_category(*category, window, cx),
+        )
+        .detach();
+        cx.subscribe_in(
+            &summary,
+            window,
+            |this, _, ShowCategory(category), window, cx| this.show_category(*category, window, cx),
+        )
+        .detach();
         Self {
             transactions: cx.new(|cx| TransactionsView::new(state.clone(), window, cx)),
             import: cx.new(|cx| ImportView::new(state.clone(), window, cx)),
-            budgets: cx.new(|cx| BudgetsView::new(state.clone(), window, cx)),
-            summary: cx.new(|cx| SummaryView::new(state.clone(), cx)),
+            budgets,
+            summary,
             settings: cx.new(|cx| SettingsView::new(state.clone(), window, cx)),
             state,
             page: Page::Transactions,
         }
+    }
+
+    /// Open Transactions filtered to a category in the selected month.
+    fn show_category(
+        &mut self,
+        category: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.page = Page::Transactions;
+        self.transactions
+            .update(cx, |v, cx| v.show_category(category, window, cx));
+        cx.notify();
     }
 
     fn render_nav_button(&self, page: Page, cx: &mut Context<Self>) -> Button {

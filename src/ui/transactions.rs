@@ -131,6 +131,55 @@ impl Sort {
 /// Width of the Delete button column, so the header lines up with rows.
 const ACTIONS_WIDTH: Pixels = px(70.);
 
+/// The category filter's "Unassigned" option. Category ids start at 1.
+const UNASSIGNED_FILTER: i64 = 0;
+
+/// Asks the app to open Transactions filtered to a category in the selected
+/// month. `None` shows the unassigned transactions.
+pub struct ShowCategory(pub Option<i64>);
+
+/// Which transactions the search box and category filter let through.
+struct Filter {
+    /// Lowercased search text. Empty matches everything.
+    query: String,
+    /// A category id, [`UNASSIGNED_FILTER`], or `None` for every category.
+    category: Option<i64>,
+}
+
+impl Filter {
+    fn is_active(&self) -> bool {
+        !self.query.is_empty() || self.category.is_some()
+    }
+
+    /// The search matches the note, category or payment method as shown in
+    /// the list, ignoring case.
+    fn matches(&self, state: &AppState, t: &Transaction) -> bool {
+        let in_category = match self.category {
+            None => true,
+            Some(UNASSIGNED_FILTER) => t.category_id.is_none(),
+            Some(id) => t.category_id == Some(id),
+        };
+        if !in_category {
+            return false;
+        }
+        if self.query.is_empty() {
+            return true;
+        }
+        let category = t
+            .category_id
+            .and_then(|id| state.category(id))
+            .map_or(UNASSIGNED, |c| c.name.as_str());
+        let payment_method = match t.payment_method_id.and_then(|id| state.payment_method(id)) {
+            Some(p) => p.name.as_str(),
+            None if t.previous_payment_method.is_some() => UNASSIGNED,
+            None => "",
+        };
+        [t.note.as_str(), category, payment_method]
+            .iter()
+            .any(|text| text.to_lowercase().contains(&self.query))
+    }
+}
+
 /// A category or payment method option in one of the form's dropdowns.
 #[derive(Clone)]
 pub(super) struct OptionItem {
@@ -150,19 +199,34 @@ impl SelectItem for OptionItem {
     }
 }
 
+fn category_item(c: &Category) -> OptionItem {
+    OptionItem {
+        id: c.id,
+        title: match c.kind {
+            CategoryKind::Income => format!("{} (income)", c.name),
+            CategoryKind::Expense => c.name.clone(),
+        }
+        .into(),
+    }
+}
+
 pub(super) fn category_items(categories: &[Category]) -> SearchableVec<OptionItem> {
-    let items: Vec<OptionItem> = categories
-        .iter()
-        .map(|c| OptionItem {
-            id: c.id,
-            title: match c.kind {
-                CategoryKind::Income => format!("{} (income)", c.name),
-                CategoryKind::Expense => c.name.clone(),
-            }
-            .into(),
-        })
-        .collect();
-    SearchableVec::new(items)
+    SearchableVec::new(categories.iter().map(category_item).collect::<Vec<_>>())
+}
+
+/// The category filter's options: every category, then Unassigned.
+fn category_filter_items(categories: &[Category]) -> SearchableVec<OptionItem> {
+    let unassigned = OptionItem {
+        id: UNASSIGNED_FILTER,
+        title: UNASSIGNED.into(),
+    };
+    SearchableVec::new(
+        categories
+            .iter()
+            .map(category_item)
+            .chain([unassigned])
+            .collect::<Vec<_>>(),
+    )
 }
 
 pub(super) fn payment_method_items(payment_methods: &[PaymentMethod]) -> SearchableVec<OptionItem> {
@@ -203,7 +267,8 @@ fn date_presets() -> Vec<DateRangePreset> {
     presets
 }
 
-/// The month's transactions with an add/edit form above the list.
+/// The month's transactions, or every month's, with an add/edit form and
+/// search and category filters above the list.
 pub struct TransactionsView {
     state: Entity<AppState>,
     date: Entity<DatePickerState>,
@@ -221,6 +286,8 @@ pub struct TransactionsView {
     /// The payment methods the dropdown was last built from.
     payment_methods: Vec<PaymentMethod>,
     sort: Sort,
+    search: Entity<InputState>,
+    category_filter: Entity<SelectState<SearchableVec<OptionItem>>>,
     /// Set while the Undo bar is shown.
     deleted: Option<Deleted>,
     focus_handle: FocusHandle,
@@ -248,6 +315,13 @@ impl TransactionsView {
                 .searchable(true)
         });
 
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search notes, categories and payment methods")
+        });
+        let category_filter = cx.new(|cx| {
+            SelectState::new(category_filter_items(&categories), None, window, cx).searchable(true)
+        });
+
         let mut subscriptions = Vec::new();
         for input in [&amount, &note] {
             subscriptions.push(cx.subscribe_in(
@@ -260,11 +334,19 @@ impl TransactionsView {
                 },
             ));
         }
-        // Payment method is disabled while an income category is chosen.
-        subscriptions.push(cx.subscribe(
-            &category,
-            |_, _, _: &SelectEvent<SearchableVec<OptionItem>>, cx| cx.notify(),
-        ));
+        subscriptions.push(cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                cx.notify();
+            }
+        }));
+        // Payment method is disabled while an income category is chosen, and
+        // the list re-filters when the category filter changes.
+        for select in [&category, &category_filter] {
+            subscriptions.push(cx.subscribe(
+                select,
+                |_, _, _: &SelectEvent<SearchableVec<OptionItem>>, cx| cx.notify(),
+            ));
+        }
         // When the month changes, move the default date of a fresh form into it.
         subscriptions.push(cx.observe_in(&state, window, |this, state, window, cx| {
             // A pending undo is dropped when categories or payment methods
@@ -273,6 +355,8 @@ impl TransactionsView {
             if state.read(cx).categories != this.categories {
                 this.categories = state.read(cx).categories.clone();
                 set_options(&this.category, category_items(&this.categories), window, cx);
+                let items = category_filter_items(&this.categories);
+                set_options(&this.category_filter, items, window, cx);
                 this.deleted = None;
             }
             if state.read(cx).payment_methods != this.payment_methods {
@@ -306,10 +390,42 @@ impl TransactionsView {
             categories,
             payment_methods,
             sort: Sort::default(),
+            search,
+            category_filter,
             deleted: None,
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
+    }
+
+    fn filter(&self, cx: &App) -> Filter {
+        Filter {
+            query: self.search.read(cx).value().trim().to_lowercase(),
+            category: self.category_filter.read(cx).selected_value().copied(),
+        }
+    }
+
+    /// Show only `category`'s transactions in the selected month. `None` shows
+    /// the unassigned ones.
+    pub fn show_category(
+        &mut self,
+        category: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |s, cx| s.set_all_time(false, cx));
+        self.search.update(cx, |i, cx| i.set_value("", window, cx));
+        let id = category.unwrap_or(UNASSIGNED_FILTER);
+        self.category_filter
+            .update(cx, |s, cx| s.set_selected_value(&id, window, cx));
+        cx.notify();
+    }
+
+    fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |i, cx| i.set_value("", window, cx));
+        self.category_filter
+            .update(cx, |s, cx| s.set_selected_index(None, window, cx));
+        cx.notify();
     }
 
     fn income_selected(&self, cx: &App) -> bool {
@@ -531,6 +647,53 @@ impl TransactionsView {
             })
     }
 
+    /// Search box, category filter and the month / all time toggle.
+    fn render_filters(&self, filter: &Filter, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.read(cx);
+        let all_time = state.all_time;
+        h_flex()
+            .gap_3()
+            .items_center()
+            .child(text_input(&self.search).flex_1())
+            // Select fills its parent, so size a wrapper rather than the Select.
+            .child(
+                div().w(px(200.)).child(
+                    Select::new(&self.category_filter)
+                        .placeholder("All categories")
+                        .search_placeholder("Search categories")
+                        .cleanable(true),
+                ),
+            )
+            .child(
+                ButtonGroup::new("scope")
+                    .outline()
+                    .child(
+                        Button::new("scope-month")
+                            .label(state.month.label())
+                            .selected(!all_time),
+                    )
+                    .child(
+                        Button::new("scope-all")
+                            .label("All time")
+                            .selected(all_time),
+                    )
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                        let all_time = clicks.contains(&1);
+                        this.state.update(cx, |s, cx| s.set_all_time(all_time, cx));
+                    })),
+            )
+            .when(filter.is_active(), |this| {
+                this.child(
+                    Button::new("clear-filters")
+                        .ghost()
+                        .label("Clear")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.clear_filters(window, cx)),
+                        ),
+                )
+            })
+    }
+
     /// A clickable column header showing an arrow when the list is sorted by it.
     fn render_header_cell(
         &self,
@@ -591,10 +754,14 @@ impl TransactionsView {
             .child(div().w(ACTIONS_WIDTH))
     }
 
-    fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_list(&self, filter: &Filter, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
         let theme = cx.theme();
-        let mut transactions: Vec<&Transaction> = state.transactions.iter().collect();
+        let mut transactions: Vec<&Transaction> = state
+            .transactions
+            .iter()
+            .filter(|t| filter.matches(state, t))
+            .collect();
         // Stable, so ties keep the loaded newest-first order.
         transactions.sort_by(|a, b| self.sort.compare(state, a, b));
         let rows: Vec<AnyElement> = transactions
@@ -676,6 +843,13 @@ impl TransactionsView {
             })
             .collect();
 
+        let empty_message = if filter.is_active() {
+            "No transactions match."
+        } else if state.all_time {
+            "No transactions yet."
+        } else {
+            "No transactions this month yet."
+        };
         let empty = rows.is_empty();
         v_flex()
             .id("transactions-list")
@@ -689,7 +863,7 @@ impl TransactionsView {
                         .p_6()
                         .text_center()
                         .text_color(cx.theme().muted_foreground)
-                        .child("No transactions this month yet."),
+                        .child(empty_message),
                 )
             })
             .when(!empty, |this| {
@@ -752,6 +926,7 @@ impl TransactionsView {
 
 impl Render for TransactionsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let filter = self.filter(cx);
         v_flex()
             .size_full()
             .p_6()
@@ -760,15 +935,95 @@ impl Render for TransactionsView {
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::undo_delete))
             .child(self.render_form(cx))
+            .child(self.render_filters(&filter, cx))
             .child(
                 v_flex()
                     .flex_1()
                     .min_h_0()
                     .child(self.render_header(cx))
-                    .child(self.render_list(cx)),
+                    .child(self.render_list(&filter, cx)),
             )
             .when_some(self.deleted.as_ref(), |this, deleted| {
                 this.child(self.render_undo_bar(deleted, cx))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AppState, CategoryKind, Filter, Money, Month, TransactionInput, UNASSIGNED_FILTER,
+    };
+    use crate::db::Db;
+
+    /// A state holding this month's transactions: groceries paid by Visa
+    /// noted "Plumber", dining out with no note, and one unassigned.
+    fn state() -> AppState {
+        let db = Db::open_in_memory().unwrap();
+        let category = |name: &str| {
+            db.categories()
+                .unwrap()
+                .into_iter()
+                .find(|c| c.name == name)
+                .unwrap()
+                .id
+        };
+        let visa = db.add_payment_method("Visa").unwrap();
+        let removed = db.add_category("Pets", CategoryKind::Expense).unwrap();
+        let add = |category_id, payment_method_id, note: &str| {
+            db.add_transaction(&TransactionInput {
+                date: Month::current().first_day(),
+                amount: Money(1000),
+                category_id,
+                payment_method_id,
+                note: note.into(),
+            })
+            .unwrap();
+        };
+        add(category("Groceries"), Some(visa), "Plumber");
+        add(category("Dining Out"), None, "");
+        add(removed, None, "vet");
+        db.delete_category(removed).unwrap();
+        AppState::new(db)
+    }
+
+    fn notes(state: &AppState, query: &str, category: Option<i64>) -> Vec<String> {
+        let filter = Filter {
+            query: query.into(),
+            category,
+        };
+        let mut notes: Vec<String> = state
+            .transactions
+            .iter()
+            .filter(|t| filter.matches(state, t))
+            .map(|t| t.note.clone())
+            .collect();
+        notes.sort();
+        notes
+    }
+
+    #[test]
+    fn search_matches_note_category_and_payment_method() {
+        let state = state();
+        assert_eq!(notes(&state, "", None), ["", "Plumber", "vet"]);
+        assert_eq!(notes(&state, "plumb", None), ["Plumber"]);
+        assert_eq!(notes(&state, "dining", None), [""]);
+        assert_eq!(notes(&state, "visa", None), ["Plumber"]);
+        assert_eq!(notes(&state, "unassigned", None), ["vet"]);
+        assert!(notes(&state, "rent", None).is_empty());
+    }
+
+    #[test]
+    fn category_filter_narrows_the_search() {
+        let state = state();
+        let groceries = state
+            .categories
+            .iter()
+            .find(|c| c.name == "Groceries")
+            .unwrap()
+            .id;
+        assert_eq!(notes(&state, "", Some(groceries)), ["Plumber"]);
+        assert!(notes(&state, "dining", Some(groceries)).is_empty());
+        assert_eq!(notes(&state, "", Some(UNASSIGNED_FILTER)), ["vet"]);
     }
 }

@@ -294,6 +294,18 @@ impl Db {
 
     /// Income never has a payment method, so it is dropped for income
     /// categories.
+    /// Every transaction in every month, newest first.
+    pub fn all_transactions(&self) -> Result<Vec<Transaction>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, date, amount_cents, category_id, note,
+                    previous_category_name, previous_category_kind,
+                    payment_method_id, previous_payment_method_name FROM transactions
+             ORDER BY date DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_transaction)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn add_transaction(&self, t: &TransactionInput) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO transactions (date, amount_cents, category_id, note, payment_method_id)
@@ -677,6 +689,25 @@ mod tests {
 
         db.delete_transaction(a).unwrap();
         assert_eq!(db.transactions_in(OCT).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn all_transactions_spans_every_month_newest_first() {
+        let db = Db::open_in_memory().unwrap();
+        add(&db, "2026-09-30", 500, "Groceries");
+        add(&db, "2026-10-15", 2000, "Groceries");
+        add(&db, "2025-01-01", 100, "Groceries");
+
+        let dates: Vec<NaiveDate> = db
+            .all_transactions()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.date)
+            .collect();
+        assert_eq!(
+            dates,
+            [date("2026-10-15"), date("2026-09-30"), date("2025-01-01")]
+        );
     }
 
     #[test]

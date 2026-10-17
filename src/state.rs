@@ -27,7 +27,9 @@ pub struct AppState {
     /// Transactions per payment method across all months; `None` counts those
     /// whose payment method was deleted.
     pub payment_method_counts: HashMap<Option<i64>, usize>,
+    /// The selected month's transactions, or every month's when `all_time` is set.
     pub transactions: Vec<Transaction>,
+    pub all_time: bool,
     pub statuses: Vec<CategoryStatus>,
     pub summary: MonthSummary,
     pub payment_method_spending: PaymentMethodSpending,
@@ -45,6 +47,7 @@ impl AppState {
             payment_methods: Vec::new(),
             payment_method_counts: HashMap::new(),
             transactions: Vec::new(),
+            all_time: false,
             statuses: Vec::new(),
             summary: MonthSummary::default(),
             payment_method_spending: PaymentMethodSpending::default(),
@@ -91,6 +94,14 @@ impl AppState {
     pub fn set_month(&mut self, month: Month, cx: &mut Context<Self>) {
         self.month = month;
         self.apply(cx, |_| Ok(()));
+    }
+
+    /// Load every month's transactions instead of just the selected month's.
+    pub fn set_all_time(&mut self, all_time: bool, cx: &mut Context<Self>) {
+        if self.all_time != all_time {
+            self.all_time = all_time;
+            self.apply(cx, |_| Ok(()));
+        }
     }
 
     pub fn add_transaction(&mut self, input: TransactionInput, cx: &mut Context<Self>) {
@@ -191,7 +202,11 @@ impl AppState {
         self.transaction_counts = self.db.transaction_counts()?;
         self.payment_methods = self.db.payment_methods()?;
         self.payment_method_counts = self.db.payment_method_counts()?;
-        self.transactions = self.db.transactions_in(self.month)?;
+        self.transactions = if self.all_time {
+            self.db.all_transactions()?
+        } else {
+            self.db.transactions_in(self.month)?
+        };
         self.statuses = self.db.category_statuses(self.month)?;
         self.summary = self.db.month_summary(self.month)?;
         self.payment_method_spending = self.db.payment_method_spending(self.month)?;

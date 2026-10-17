@@ -7,7 +7,7 @@ moves, and move it to **Done** with the date and PR when it ships.
 
 | ID | Title | Status | Priority |
 | --- | --- | --- | --- |
-| [BUD-2](#bud-2-search-and-filter-transactions) | Search and filter transactions | To do | High |
+| [BUD-2](#bud-2-search-and-filter-transactions) | Search and filter transactions | In progress | High |
 | [BUD-3](#bud-3-recurring-transactions) | Recurring transactions | To do | Medium |
 | [BUD-4](#bud-4-csv-export-and-backuprestore) | CSV export and backup/restore | To do | Medium |
 | [BUD-5](#bud-5-keyboard-shortcuts) | Keyboard shortcuts | To do | Medium |
@@ -15,12 +15,13 @@ moves, and move it to **Done** with the date and PR when it ships.
 | [BUD-7](#bud-7-month-over-month-trends) | Month-over-month trends | To do | Low |
 | [BUD-8](#bud-8-jump-to-current-month) | Jump to current month | To do | Low |
 | [BUD-9](#bud-9-totals-for-the-shown-transactions) | Totals for the shown transactions | To do | Low |
+| [BUD-10](#bud-10-visual-refresh) | Visual refresh | To do | Low |
 
 ---
 
 ## BUD-2: Search and filter transactions
 
-**Status:** To do · **Priority:** High
+**Status:** In progress · **Priority:** High
 
 **Problem:** The list only ever shows one month and can be sorted but not
 filtered. Finding "when did I last pay the plumber?" means paging back month
@@ -28,10 +29,10 @@ by month. Budgets and Summary show which categories are over budget but you
 can't click through to their transactions.
 
 **Acceptance criteria:**
-- [ ] A search box above the list matches note, category and payment method.
-- [ ] A "This month / All time" toggle; all-time results show their month.
-- [ ] A category filter.
-- [ ] Clicking a budget row or a summary bar opens Transactions filtered to
+- [x] A search box above the list matches note, category and payment method.
+- [x] A "This month / All time" toggle; all-time results show their month.
+- [x] A category filter.
+- [x] Clicking a budget row or a summary bar opens Transactions filtered to
       that category and month.
 
 ---
@@ -130,6 +131,22 @@ history is lost.
 **Acceptance criteria:**
 - [ ] A footer under the transaction list with the count, income and
       expense totals of the transactions shown. Most useful after BUD-2.
+
+---
+
+## BUD-10: Visual refresh
+
+**Status:** To do · **Priority:** Low
+
+**Problem:** The UI works but is plain to look at: flat dark panels, long
+undivided rows, and little visual hierarchy between the form, filters and
+list.
+
+**Acceptance criteria:**
+- [ ] Decide on a direction first (spacing, type scale, color accents, how
+      income/expense and over-budget read at a glance).
+- [ ] Apply it consistently across Transactions, Import, Budgets, Summary and
+      Settings, in light and dark mode.
 
 ---
 

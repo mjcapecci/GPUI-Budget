@@ -14,7 +14,7 @@ pub use import::ImportView;
 pub use payment_methods::PaymentMethodsView;
 pub use settings::SettingsView;
 pub use summary::SummaryView;
-pub use transactions::TransactionsView;
+pub use transactions::{ShowCategory, TransactionsView};
 
 /// Register every page's keyboard shortcuts.
 pub fn bind_keys(cx: &mut App) {
