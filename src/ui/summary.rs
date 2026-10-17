@@ -4,18 +4,24 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use std::cell::Cell;
+use std::rc::Rc;
+
+use super::ShowCategory;
 use crate::model::{Money, UNASSIGNED};
 use crate::state::AppState;
 
 #[derive(Clone)]
 struct Bar {
+    /// `None` for the unassigned transactions.
+    category: Option<i64>,
     name: SharedString,
     dollars: f64,
     over: bool,
 }
 
 /// Income, expenses and net for the month plus spending by category and by
-/// payment method.
+/// payment method. Clicking a category's bar shows its transactions.
 pub struct SummaryView {
     state: Entity<AppState>,
 }
@@ -26,6 +32,8 @@ impl SummaryView {
         Self { state }
     }
 }
+
+impl EventEmitter<ShowCategory> for SummaryView {}
 
 fn stat_card(label: &'static str, value: Money, color: Hsla, cx: &App) -> impl IntoElement {
     v_flex()
@@ -108,6 +116,7 @@ impl Render for SummaryView {
             .iter()
             .filter(|s| s.spent.0 > 0)
             .map(|s| Bar {
+                category: Some(s.category.id),
                 name: s.category.name.clone().into(),
                 dollars: s.spent.0 as f64 / 100.0,
                 over: s.is_over_budget(),
@@ -115,6 +124,7 @@ impl Render for SummaryView {
             .collect();
         if summary.unassigned_expenses.0 > 0 {
             bars.push(Bar {
+                category: None,
                 name: UNASSIGNED.into(),
                 dollars: summary.unassigned_expenses.0 as f64 / 100.0,
                 over: false,
@@ -131,11 +141,29 @@ impl Render for SummaryView {
                 .child("No spending recorded this month.")
                 .into_any_element()
         } else {
+            // The chart has no click handler, so remember the bar its tooltip
+            // was last drawn for. The tooltip only shows over a bar, so this
+            // stays `None` over the axis labels.
+            let hovered: Rc<Cell<Option<Option<i64>>>> = Rc::new(Cell::new(None));
             div()
+                .id("spending-chart")
                 .h(px(320.))
+                .cursor_pointer()
+                .on_click(cx.listener({
+                    let hovered = hovered.clone();
+                    move |_, _, _, cx| {
+                        if let Some(category) = hovered.get() {
+                            cx.emit(ShowCategory(category));
+                        }
+                    }
+                }))
                 .child(
                     BarChart::new(bars)
                         .band(|b: &Bar| b.name.clone())
+                        .tooltip_title(move |b: &Bar| {
+                            hovered.set(Some(b.category));
+                            b.name.clone()
+                        })
                         .value(|b: &Bar| b.dollars)
                         .fill(move |b: &Bar, _, _, _| if b.over { danger } else { normal })
                         .label(|b: &Bar| Money((b.dollars * 100.0).round() as i64).to_string())
@@ -183,12 +211,9 @@ impl Render for SummaryView {
                                     .font_weight(FontWeight::MEDIUM)
                                     .child("Spending by category"),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.muted_foreground)
-                                    .child("Red bars are over budget"),
-                            ),
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(
+                                "Red bars are over budget · Click a bar to see its transactions",
+                            )),
                     )
                     .child(chart),
             )

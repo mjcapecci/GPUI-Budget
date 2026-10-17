@@ -7,7 +7,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::text_input;
+use super::{ShowCategory, text_input};
 use crate::model::{Money, Month};
 use crate::state::AppState;
 
@@ -15,7 +15,7 @@ use crate::state::AppState;
 ///
 /// Each limit input saves on Enter or when it loses focus. Clearing an input
 /// removes this month's budget, so the category falls back to the most recent
-/// earlier month's budget (if any).
+/// earlier month's budget (if any). Clicking a category shows its transactions.
 pub struct BudgetsView {
     state: Entity<AppState>,
     inputs: HashMap<i64, Entity<InputState>>,
@@ -144,6 +144,8 @@ impl BudgetsView {
     }
 }
 
+impl EventEmitter<ShowCategory> for BudgetsView {}
+
 impl Render for BudgetsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
@@ -158,6 +160,10 @@ impl Render for BudgetsView {
         let total_spent: i64 = state.statuses.iter().map(|s| s.spent.0).sum();
 
         let rows = state.statuses.iter().map(|status| {
+            let category_id = status.category.id;
+            let click_id = SharedString::from(format!("budget-{category_id}"));
+            let show_transactions =
+                cx.listener(move |_, _, _, cx| cx.emit(ShowCategory(Some(category_id))));
             let over = status.is_over_budget();
             let bar_color = if over {
                 theme.danger
@@ -180,8 +186,15 @@ impl Render for BudgetsView {
                 .border_color(theme.border)
                 .child(
                     v_flex()
+                        .id(click_id)
                         .flex_1()
                         .gap_1p5()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|this| this.bg(theme.list_hover))
+                        .on_click(show_transactions)
                         .child(
                             h_flex()
                                 .justify_between()
@@ -230,7 +243,7 @@ impl Render for BudgetsView {
                     .justify_between()
                     .pb_2()
                     .text_color(theme.muted_foreground)
-                    .child("Set a monthly limit for each category. Limits carry forward to later months.")
+                    .child("Set a monthly limit for each category. Limits carry forward to later months. Click a category to see its transactions.")
                     .child(format!("{} of {} budgeted", Money(total_spent), Money(total_budget))),
             )
             .when_some(self.error.clone(), |this, error| {
