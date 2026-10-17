@@ -342,6 +342,29 @@ impl Db {
         Ok(())
     }
 
+    /// Put back a deleted transaction exactly as it was, including its id and
+    /// any remembered deleted category or payment method.
+    pub fn restore_transaction(&self, t: &Transaction) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO transactions (id, date, amount_cents, category_id, note,
+                    previous_category_name, previous_category_kind,
+                    payment_method_id, previous_payment_method_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                t.id,
+                t.date.to_string(),
+                t.amount.0,
+                t.category_id,
+                t.note,
+                t.previous_category.as_ref().map(|p| p.name.as_str()),
+                t.previous_category.as_ref().map(|p| p.kind.as_str()),
+                t.payment_method_id,
+                t.previous_payment_method,
+            ],
+        )?;
+        Ok(())
+    }
+
     // MARK: Import
 
     /// Add several transactions at once, all or none, and remember the
@@ -829,6 +852,33 @@ mod tests {
             "still waiting for an income category named Salary"
         );
         assert_eq!(db.month_summary(OCT).unwrap().unassigned_expenses, Money(0));
+    }
+
+    #[test]
+    fn restoring_a_deleted_transaction_puts_it_back_exactly() {
+        let db = Db::open_in_memory().unwrap();
+        let visa = db.add_payment_method("Visa").unwrap();
+        let paid = pay(&db, "2026-10-03", 6000, "Groceries", Some(visa));
+        let unassigned = pay(&db, "2026-10-04", 2500, "Dining Out", Some(visa));
+        add(&db, "2026-10-05", 100, "Other");
+        db.delete_category(category(&db, "Dining Out")).unwrap();
+        db.delete_payment_method(visa).unwrap();
+        let visa = db.add_payment_method("Visa").unwrap();
+        let before = db.transactions_in(OCT).unwrap();
+
+        for id in [paid, unassigned] {
+            let t = find(&db, id);
+            db.delete_transaction(id).unwrap();
+            db.restore_transaction(&t).unwrap();
+        }
+        assert_eq!(db.transactions_in(OCT).unwrap(), before);
+        let t = find(&db, unassigned);
+        assert_eq!(t.category_id, None);
+        assert_eq!(t.payment_method_id, Some(visa));
+        assert_eq!(t.previous_category.unwrap().name, "Dining Out");
+
+        // A transaction that wasn't deleted can't be restored over itself.
+        assert!(db.restore_transaction(&find(&db, paid)).is_err());
     }
 
     fn pay(db: &Db, d: &str, cents: i64, cat: &str, method: Option<i64>) -> i64 {

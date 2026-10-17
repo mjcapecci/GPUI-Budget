@@ -105,6 +105,11 @@ impl AppState {
         self.apply(cx, |db| db.delete_transaction(id));
     }
 
+    /// Put back a transaction removed by [`Self::delete_transaction`].
+    pub fn restore_transaction(&mut self, t: Transaction, cx: &mut Context<Self>) {
+        self.apply(cx, |db| db.restore_transaction(&t));
+    }
+
     pub fn set_budget(&mut self, category_id: i64, limit: Option<Money>, cx: &mut Context<Self>) {
         let month = self.month;
         self.apply(cx, |db| db.set_budget(category_id, month, limit));

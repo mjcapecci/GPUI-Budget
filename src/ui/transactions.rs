@@ -9,12 +9,33 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use std::cmp::Ordering;
+use std::time::Duration;
 
 use super::{field, text_input, truncated_text};
 use crate::model::{
     Category, CategoryKind, Money, Month, PaymentMethod, Transaction, TransactionInput, UNASSIGNED,
 };
 use crate::state::AppState;
+
+actions!(transactions, [UndoDelete]);
+
+const CONTEXT: &str = "TransactionsView";
+
+/// How long the Undo bar stays up after deleting a transaction.
+const UNDO_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// ⌘Z on the Transactions page restores the last deleted transaction. Text
+/// inputs on the page keep their own undo.
+pub(super) fn bind_keys(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("secondary-z", UndoDelete, Some(CONTEXT))]);
+}
+
+/// The last deleted transaction, kept until the Undo bar goes away.
+struct Deleted {
+    transaction: Transaction,
+    /// Dismisses the Undo bar after [`UNDO_TIMEOUT`].
+    _timer: Task<()>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
@@ -200,6 +221,9 @@ pub struct TransactionsView {
     /// The payment methods the dropdown was last built from.
     payment_methods: Vec<PaymentMethod>,
     sort: Sort,
+    /// Set while the Undo bar is shown.
+    deleted: Option<Deleted>,
+    focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -243,14 +267,19 @@ impl TransactionsView {
         ));
         // When the month changes, move the default date of a fresh form into it.
         subscriptions.push(cx.observe_in(&state, window, |this, state, window, cx| {
+            // A pending undo is dropped when categories or payment methods
+            // change, so it can't restore a transaction pointing at one that
+            // was deleted.
             if state.read(cx).categories != this.categories {
                 this.categories = state.read(cx).categories.clone();
                 set_options(&this.category, category_items(&this.categories), window, cx);
+                this.deleted = None;
             }
             if state.read(cx).payment_methods != this.payment_methods {
                 this.payment_methods = state.read(cx).payment_methods.clone();
                 let items = payment_method_items(&this.payment_methods);
                 set_options(&this.payment_method, items, window, cx);
+                this.deleted = None;
             }
             let month = state.read(cx).month;
             if month != this.month {
@@ -277,6 +306,8 @@ impl TransactionsView {
             categories,
             payment_methods,
             sort: Sort::default(),
+            deleted: None,
+            focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
     }
@@ -359,6 +390,52 @@ impl TransactionsView {
                 Some(id) => s.set_selected_value(&id, window, cx),
                 None => s.set_selected_index(None, window, cx),
             });
+        cx.notify();
+    }
+
+    /// Delete a transaction and offer to undo it, replacing any earlier undo.
+    fn delete(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(transaction) = self
+            .state
+            .read(cx)
+            .transactions
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        if self.editing == Some(id) {
+            self.reset_form(window, cx);
+        }
+        self.state.update(cx, |s, cx| s.delete_transaction(id, cx));
+        if self.state.read(cx).error.is_some() {
+            return;
+        }
+        let timer = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(UNDO_TIMEOUT).await;
+            this.update(cx, |this, cx| this.dismiss_undo(cx)).ok();
+        });
+        self.deleted = Some(Deleted {
+            transaction,
+            _timer: timer,
+        });
+        // So ⌘Z reaches this page rather than a text input.
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn undo_delete(&mut self, _: &UndoDelete, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(deleted) = self.deleted.take() else {
+            return;
+        };
+        self.state
+            .update(cx, |s, cx| s.restore_transaction(deleted.transaction, cx));
+        cx.notify();
+    }
+
+    fn dismiss_undo(&mut self, cx: &mut Context<Self>) {
+        self.deleted = None;
         cx.notify();
     }
 
@@ -591,10 +668,7 @@ impl TransactionsView {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     // Don't also open the row for editing.
                                     cx.stop_propagation();
-                                    if this.editing == Some(id) {
-                                        this.reset_form(window, cx);
-                                    }
-                                    this.state.update(cx, |s, cx| s.delete_transaction(id, cx));
+                                    this.delete(id, window, cx);
                                 })),
                         ),
                     )
@@ -630,12 +704,61 @@ impl TransactionsView {
     }
 }
 
+impl TransactionsView {
+    /// "Deleted Groceries · $60.00 · Undo" after deleting a transaction.
+    fn render_undo_bar(&self, deleted: &Deleted, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.read(cx);
+        let t = &deleted.transaction;
+        let category = match t.category_id.and_then(|id| state.category(id)) {
+            Some(c) => c.name.clone(),
+            None => UNASSIGNED.to_string(),
+        };
+        let mut description = format!("Deleted {category} · {}", t.amount);
+        if !t.note.trim().is_empty() {
+            description.push_str(&format!(" · {}", t.note.trim()));
+        }
+        h_flex()
+            .flex_none()
+            .gap_3()
+            .px_4()
+            .py_2()
+            .items_center()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().secondary)
+            .child(truncated_text("undo-description", description).flex_1())
+            .child(
+                Button::new("undo-delete")
+                    .primary()
+                    .compact()
+                    .label("Undo")
+                    .tooltip("Undo (⌘Z)")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.undo_delete(&UndoDelete, window, cx)
+                        }),
+                    ),
+            )
+            .child(
+                Button::new("dismiss-undo")
+                    .ghost()
+                    .compact()
+                    .label("Dismiss")
+                    .on_click(cx.listener(|this, _, _, cx| this.dismiss_undo(cx))),
+            )
+    }
+}
+
 impl Render for TransactionsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .p_6()
             .gap_4()
+            .track_focus(&self.focus_handle)
+            .key_context(CONTEXT)
+            .on_action(cx.listener(Self::undo_delete))
             .child(self.render_form(cx))
             .child(
                 v_flex()
@@ -644,5 +767,8 @@ impl Render for TransactionsView {
                     .child(self.render_header(cx))
                     .child(self.render_list(cx)),
             )
+            .when_some(self.deleted.as_ref(), |this, deleted| {
+                this.child(self.render_undo_bar(deleted, cx))
+            })
     }
 }
