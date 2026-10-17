@@ -25,7 +25,7 @@ const CONTEXT: &str = "ImportView";
 
 /// ⌘V on the Import page adds the screenshot on the clipboard. Text inputs
 /// on the page keep their own paste.
-pub fn bind_keys(cx: &mut App) {
+pub(super) fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new(
         "secondary-v",
         PasteScreenshot,

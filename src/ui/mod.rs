@@ -10,11 +10,17 @@ mod transactions;
 pub use app_view::AppView;
 pub use budgets::BudgetsView;
 pub use categories::CategoriesView;
-pub use import::{ImportView, bind_keys};
+pub use import::ImportView;
 pub use payment_methods::PaymentMethodsView;
 pub use settings::SettingsView;
 pub use summary::SummaryView;
 pub use transactions::TransactionsView;
+
+/// Register every page's keyboard shortcuts.
+pub fn bind_keys(cx: &mut App) {
+    import::bind_keys(cx);
+    transactions::bind_keys(cx);
+}
 
 use std::cell::Cell;
 use std::rc::Rc;
