@@ -8,11 +8,22 @@ use gpui_kit::*;
 use crate::db::Db;
 use crate::import::{API_KEY_ENV, API_KEY_SETTING};
 use crate::model::{
-    Category, CategoryKind, CategoryStatus, Money, Month, MonthSummary, PaymentMethod,
-    PaymentMethodSpending, Transaction, TransactionInput,
+    Category, CategoryKind, CategoryStatus, DueTransaction, Frequency, Money, Month, MonthSummary,
+    PaymentMethod, PaymentMethodSpending, Recurring, RecurringInput, Transaction, TransactionInput,
 };
 
 const THEME_KEY: &str = "theme";
+
+/// How a transaction should repeat when it's saved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Repeat {
+    pub frequency: Frequency,
+    /// The month of the last payment, or `None` to repeat until stopped.
+    pub end: Option<Month>,
+    /// The amount varies, like a utility bill, so later payments are added
+    /// with an estimate and need their amount entered.
+    pub varies: bool,
+}
 
 /// Shared application state. Views hold an `Entity<AppState>` and re-render
 /// when it notifies. Every mutation writes to SQLite and then reloads the
@@ -33,6 +44,14 @@ pub struct AppState {
     pub statuses: Vec<CategoryStatus>,
     pub summary: MonthSummary,
     pub payment_method_spending: PaymentMethodSpending,
+    pub recurring: Vec<Recurring>,
+    /// Recurring payments in the selected month not yet added or skipped.
+    pub due: Vec<DueTransaction>,
+    /// How many recurring payments were skipped in the selected month.
+    pub skipped: usize,
+    /// Payments in any month, dated today or earlier, whose amount varies
+    /// and still needs entering.
+    pub pending: Vec<Transaction>,
     /// The last database error, shown in the UI until the next success.
     pub error: Option<String>,
 }
@@ -51,6 +70,10 @@ impl AppState {
             statuses: Vec::new(),
             summary: MonthSummary::default(),
             payment_method_spending: PaymentMethodSpending::default(),
+            recurring: Vec::new(),
+            due: Vec::new(),
+            skipped: 0,
+            pending: Vec::new(),
             error: None,
         };
         let result = state.reload();
@@ -104,12 +127,50 @@ impl AppState {
         }
     }
 
-    pub fn add_transaction(&mut self, input: TransactionInput, cx: &mut Context<Self>) {
-        self.apply(cx, |db| db.add_transaction(&input).map(|_| ()));
+    /// Add a transaction, optionally as the first payment of a new
+    /// recurring series.
+    pub fn add_transaction(
+        &mut self,
+        input: TransactionInput,
+        repeat: Option<Repeat>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply(cx, |db| {
+            let id = db.add_transaction(&input)?;
+            if let Some(r) = repeat {
+                db.repeat_transaction(id, r.frequency, r.end, r.varies)?;
+            }
+            Ok(())
+        });
     }
 
-    pub fn update_transaction(&mut self, id: i64, input: TransactionInput, cx: &mut Context<Self>) {
-        self.apply(cx, |db| db.update_transaction(id, &input));
+    /// Save an edited transaction. `repeat` makes a transaction that isn't
+    /// recurring yet the first payment of a new series.
+    pub fn update_transaction(
+        &mut self,
+        id: i64,
+        input: TransactionInput,
+        repeat: Option<Repeat>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply(cx, |db| {
+            db.update_transaction(id, &input)?;
+            if let Some(r) = repeat {
+                db.repeat_transaction(id, r.frequency, r.end, r.varies)?;
+            }
+            Ok(())
+        });
+    }
+
+    /// Save an edited recurring payment and use its amount, category,
+    /// payment method and note for the series' later payments too.
+    pub fn update_transaction_and_series(
+        &mut self,
+        id: i64,
+        input: TransactionInput,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply(cx, |db| db.update_transaction_and_series(id, &input));
     }
 
     pub fn delete_transaction(&mut self, id: i64, cx: &mut Context<Self>) {
@@ -119,6 +180,62 @@ impl AppState {
     /// Put back a transaction removed by [`Self::delete_transaction`].
     pub fn restore_transaction(&mut self, t: Transaction, cx: &mut Context<Self>) {
         self.apply(cx, |db| db.restore_transaction(&t));
+    }
+
+    pub fn recurring(&self, id: i64) -> Option<&Recurring> {
+        self.recurring.iter().find(|r| r.id == id)
+    }
+
+    /// Add a recurring transaction. `amount` is `None` if it varies.
+    pub fn add_recurring(
+        &mut self,
+        input: RecurringInput,
+        amount: Option<Money>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply(cx, |db| db.add_recurring(&input, amount).map(|_| ()));
+    }
+
+    /// Save an edited series. `amount` changes the amount from a month on,
+    /// to a fixed amount or (`None`) one that varies.
+    pub fn update_recurring(
+        &mut self,
+        id: i64,
+        input: RecurringInput,
+        amount: Option<(Month, Option<Money>)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply(cx, |db| {
+            db.update_recurring(id, &input)?;
+            if let Some((from, amount)) = amount {
+                db.set_recurring_amount(id, from, amount)?;
+            }
+            Ok(())
+        });
+    }
+
+    /// Stop offering a series' payments after the current month.
+    pub fn stop_recurring(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.apply(cx, |db| db.stop_recurring(id, Month::current()));
+    }
+
+    pub fn delete_recurring(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.apply(cx, |db| db.delete_recurring(id));
+    }
+
+    /// Add due recurring payments as transactions.
+    pub fn add_due(&mut self, due: Vec<DueTransaction>, cx: &mut Context<Self>) {
+        self.apply(cx, |db| db.add_due(&due));
+    }
+
+    pub fn skip_due(&mut self, due: &DueTransaction, cx: &mut Context<Self>) {
+        self.apply(cx, |db| db.skip_due(due.recurring_id, due.month));
+    }
+
+    /// Offer the selected month's skipped payments again.
+    pub fn unskip_all(&mut self, cx: &mut Context<Self>) {
+        let month = self.month;
+        self.apply(cx, |db| db.unskip_all(month));
     }
 
     pub fn set_budget(&mut self, category_id: i64, limit: Option<Money>, cx: &mut Context<Self>) {
@@ -210,6 +327,10 @@ impl AppState {
         self.statuses = self.db.category_statuses(self.month)?;
         self.summary = self.db.month_summary(self.month)?;
         self.payment_method_spending = self.db.payment_method_spending(self.month)?;
+        self.recurring = self.db.recurring()?;
+        self.due = self.db.due_transactions(self.month)?;
+        self.skipped = self.db.skipped_count(self.month)?;
+        self.pending = self.db.pending_amounts(chrono::Local::now().date_naive())?;
         Ok(())
     }
 

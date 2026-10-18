@@ -3,12 +3,16 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{BudgetsView, ImportView, SettingsView, ShowCategory, SummaryView, TransactionsView};
+use super::{
+    BudgetsView, ImportView, RecurringView, SettingsView, ShowCategory, SummaryView,
+    TransactionsView,
+};
 use crate::state::AppState;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Transactions,
+    Recurring,
     Import,
     Budgets,
     Summary,
@@ -17,8 +21,9 @@ enum Page {
 
 impl Page {
     /// The pages listed at the top of the sidebar. Settings sits at the bottom.
-    const MAIN: [Page; 4] = [
+    const MAIN: [Page; 5] = [
         Page::Transactions,
+        Page::Recurring,
         Page::Import,
         Page::Budgets,
         Page::Summary,
@@ -27,6 +32,7 @@ impl Page {
     fn label(self) -> &'static str {
         match self {
             Page::Transactions => "Transactions",
+            Page::Recurring => "Recurring",
             Page::Import => "Import",
             Page::Budgets => "Budgets",
             Page::Summary => "Summary",
@@ -36,7 +42,7 @@ impl Page {
 
     /// Whether the page shows one month's data, so needs the month switcher.
     fn is_monthly(self) -> bool {
-        !matches!(self, Page::Import | Page::Settings)
+        !matches!(self, Page::Recurring | Page::Import | Page::Settings)
     }
 }
 
@@ -45,6 +51,7 @@ pub struct AppView {
     state: Entity<AppState>,
     page: Page,
     transactions: Entity<TransactionsView>,
+    recurring: Entity<RecurringView>,
     import: Entity<ImportView>,
     budgets: Entity<BudgetsView>,
     summary: Entity<SummaryView>,
@@ -74,6 +81,7 @@ impl AppView {
         .detach();
         Self {
             transactions: cx.new(|cx| TransactionsView::new(state.clone(), window, cx)),
+            recurring: cx.new(|cx| RecurringView::new(state.clone(), window, cx)),
             import: cx.new(|cx| ImportView::new(state.clone(), window, cx)),
             budgets,
             summary,
@@ -97,10 +105,28 @@ impl AppView {
     }
 
     fn render_nav_button(&self, page: Page, cx: &mut Context<Self>) -> Button {
+        // Bills whose amount needs entering are counted on Transactions, so
+        // they're noticed from any page.
+        let pending = match page {
+            Page::Transactions => self.state.read(cx).pending.len(),
+            _ => 0,
+        };
         // Button centers its label, so pass it as a full-width child instead.
         Button::new(page.label())
             .accessibility_label(page.label())
             .child(div().flex_1().min_w_0().truncate().child(page.label()))
+            .when(pending > 0, |this| {
+                this.child(
+                    div()
+                        .px_1p5()
+                        .rounded_full()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .bg(cx.theme().warning)
+                        .text_color(cx.theme().warning_foreground)
+                        .child(pending.to_string()),
+                )
+            })
             .w_full()
             .map(|b| {
                 if self.page == page {
@@ -199,6 +225,7 @@ impl Render for AppView {
         let error = self.state.read(cx).error.clone();
         let page: AnyView = match self.page {
             Page::Transactions => self.transactions.clone().into(),
+            Page::Recurring => self.recurring.clone().into(),
             Page::Import => self.import.clone().into(),
             Page::Budgets => self.budgets.clone().into(),
             Page::Summary => self.summary.clone().into(),

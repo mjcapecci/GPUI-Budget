@@ -8,7 +8,7 @@ moves, and move it to **Done** with the date and PR when it ships.
 | ID | Title | Status | Priority |
 | --- | --- | --- | --- |
 | [BUD-2](#bud-2-search-and-filter-transactions) | Search and filter transactions | In progress | High |
-| [BUD-3](#bud-3-recurring-transactions) | Recurring transactions | To do | Medium |
+| [BUD-3](#bud-3-recurring-transactions) | Recurring transactions | In progress | Medium |
 | [BUD-4](#bud-4-csv-export-and-backuprestore) | CSV export and backup/restore | To do | Medium |
 | [BUD-5](#bud-5-keyboard-shortcuts) | Keyboard shortcuts | To do | Medium |
 | [BUD-6](#bud-6-rename-categories-and-payment-methods) | Rename categories and payment methods | To do | Low |
@@ -39,19 +39,32 @@ can't click through to their transactions.
 
 ## BUD-3: Recurring transactions
 
-**Status:** To do · **Priority:** Medium
+**Status:** In progress · **Priority:** Medium
 
 **Problem:** Rent, salary, subscriptions and utilities have to be re-entered
 every month. Budgets carry forward; transactions don't.
 
 **Acceptance criteria:**
-- [ ] A "Repeat monthly" option when adding or editing a transaction.
-- [ ] Opening a month offers to add the recurring transactions due in it
+- [x] A "Repeat monthly" option when adding or editing a transaction
+      (monthly, every 3 months or yearly, with an optional last payment).
+- [x] Opening a month offers to add the recurring transactions due in it
       ("3 recurring transactions due · Add all"), never adding them twice.
-- [ ] Recurring transactions can be stopped and edited.
+      Each can also be added or skipped on its own.
+- [x] Recurring transactions can be stopped and edited (Recurring page).
+- [x] A series has a date range: first payment and optional last payment.
+- [x] The amount can change from a chosen month on (e.g. rent goes up in
+      July) without changing payments already added.
+- [x] Editing one payment changes only that payment, unless "use for later
+      payments too" is checked, which updates the series from that month on.
+- [x] "Amount varies" for bills like utilities: payments are added with an
+      estimate (the last amount entered) and flagged; once a payment's date
+      passes, Transactions lists it ("1 bill needs its actual amount · Enter
+      amount") and the sidebar shows a count until the amount is entered.
+- [x] A series switches between a fixed and a varying amount from a chosen
+      month, in either direction, without being re-created.
 
-**Notes:** A cheaper first step is a "Duplicate" or "Copy to this month" row
-action.
+**Notes:** Each payment is stored as an ordinary transaction linked to its
+series and month, so editing a series never rewrites saved payments.
 
 ---
 

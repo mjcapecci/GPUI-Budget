@@ -1,9 +1,12 @@
-use chrono::{Days, Local};
+use chrono::{Days, Local, NaiveDate};
 use gpui_kit::component::button::*;
+use gpui_kit::component::calendar::Date;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::date_picker::{DatePicker, DatePickerState, DateRangePreset};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::*;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -13,9 +16,10 @@ use std::time::Duration;
 
 use super::{field, text_input, truncated_text};
 use crate::model::{
-    Category, CategoryKind, Money, Month, PaymentMethod, Transaction, TransactionInput, UNASSIGNED,
+    Category, CategoryKind, DueTransaction, Frequency, Money, Month, PaymentMethod, Transaction,
+    TransactionInput, UNASSIGNED,
 };
-use crate::state::AppState;
+use crate::state::{AppState, Repeat};
 
 actions!(transactions, [UndoDelete]);
 
@@ -187,6 +191,15 @@ pub(super) struct OptionItem {
     title: SharedString,
 }
 
+impl OptionItem {
+    pub(super) fn new(id: i64, title: impl Into<SharedString>) -> Self {
+        Self {
+            id,
+            title: title.into(),
+        }
+    }
+}
+
 impl SelectItem for OptionItem {
     type Value = i64;
 
@@ -227,6 +240,55 @@ fn category_filter_items(categories: &[Category]) -> SearchableVec<OptionItem> {
             .chain([unassigned])
             .collect::<Vec<_>>(),
     )
+}
+
+/// The repeat frequency dropdown's options, valued by months between payments.
+pub(super) fn frequency_items() -> SearchableVec<OptionItem> {
+    let items: Vec<OptionItem> = Frequency::ALL
+        .into_iter()
+        .map(|f| OptionItem {
+            id: f.months() as i64,
+            title: f.label().into(),
+        })
+        .collect();
+    SearchableVec::new(items)
+}
+
+/// A frequency dropdown with Monthly selected.
+pub(super) fn frequency_select(
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<SelectState<SearchableVec<OptionItem>>> {
+    cx.new(|cx| {
+        let mut select = SelectState::new(frequency_items(), None, window, cx);
+        select.set_selected_value(&(Frequency::Monthly.months() as i64), window, cx);
+        select
+    })
+}
+
+/// The frequency chosen in a dropdown from [`frequency_select`].
+pub(super) fn selected_frequency(
+    select: &Entity<SelectState<SearchableVec<OptionItem>>>,
+    cx: &App,
+) -> Frequency {
+    select
+        .read(cx)
+        .selected_value()
+        .and_then(|months| Frequency::from_months(*months as i32))
+        .unwrap_or(Frequency::Monthly)
+}
+
+/// A date picker for a recurring transaction's optional last payment.
+pub(super) fn end_date_picker(window: &mut Window, cx: &mut App) -> Entity<DatePickerState> {
+    cx.new(|cx| DatePickerState::new(window, cx).date_format("%b %-d, %Y"))
+}
+
+/// "1 recurring transaction", "3 recurring transactions".
+fn recurring_label(count: usize) -> String {
+    match count {
+        1 => "1 recurring transaction".into(),
+        n => format!("{n} recurring transactions"),
+    }
 }
 
 pub(super) fn payment_method_items(payment_methods: &[PaymentMethod]) -> SearchableVec<OptionItem> {
@@ -277,8 +339,25 @@ pub struct TransactionsView {
     category: Entity<SelectState<SearchableVec<OptionItem>>>,
     /// Optional, and only used for expenses.
     payment_method: Entity<SelectState<SearchableVec<OptionItem>>>,
+    /// Whether "Repeat" is checked, making the transaction recurring.
+    repeat: bool,
+    frequency: Entity<SelectState<SearchableVec<OptionItem>>>,
+    /// The optional last payment of a new recurring transaction.
+    repeat_end: Entity<DatePickerState>,
     /// The transaction being edited, or `None` when adding a new one.
     editing: Option<i64>,
+    /// The series the edited transaction is a payment of, if any.
+    editing_series: Option<i64>,
+    /// Whether an edited payment's changes also apply to the series' later
+    /// payments.
+    apply_to_series: bool,
+    /// Whether "Amount varies" is checked under "Repeat".
+    repeat_varies: bool,
+    /// The estimate of the edited payment, when its amount still needs
+    /// entering.
+    editing_estimate: Option<Money>,
+    /// Whether the due recurring payments are listed one by one.
+    due_expanded: bool,
     form_error: Option<SharedString>,
     month: Month,
     /// The categories the dropdown was last built from.
@@ -314,6 +393,9 @@ impl TransactionsView {
             SelectState::new(payment_method_items(&payment_methods), None, window, cx)
                 .searchable(true)
         });
+
+        let frequency = frequency_select(window, cx);
+        let repeat_end = end_date_picker(window, cx);
 
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search notes, categories and payment methods")
@@ -384,7 +466,15 @@ impl TransactionsView {
             note,
             category,
             payment_method,
+            repeat: false,
+            frequency,
+            repeat_end,
             editing: None,
+            editing_series: None,
+            apply_to_series: false,
+            repeat_varies: false,
+            editing_estimate: None,
+            due_expanded: false,
             form_error: None,
             month,
             categories,
@@ -461,13 +551,40 @@ impl TransactionsView {
         })
     }
 
+    /// How a new or not-yet-recurring transaction should repeat, if
+    /// "Repeat" is checked.
+    fn read_repeat(&self, date: NaiveDate, cx: &App) -> Result<Option<Repeat>, &'static str> {
+        if !self.repeat || self.editing_series.is_some() {
+            return Ok(None);
+        }
+        let end = self
+            .repeat_end
+            .read(cx)
+            .date()
+            .start()
+            .map(Month::containing);
+        if end.is_some_and(|end| end < Month::containing(date)) {
+            return Err("The last payment can't be before this one.");
+        }
+        Ok(Some(Repeat {
+            frequency: selected_frequency(&self.frequency, cx),
+            end,
+            varies: self.repeat_varies,
+        }))
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.read_form(cx) {
-            Ok(input) => {
+        let form = self
+            .read_form(cx)
+            .and_then(|input| Ok((self.read_repeat(input.date, cx)?, input)));
+        match form {
+            Ok((repeat, input)) => {
                 let editing = self.editing;
+                let apply_to_series = self.editing_series.is_some() && self.apply_to_series;
                 self.state.update(cx, |s, cx| match editing {
-                    Some(id) => s.update_transaction(id, input, cx),
-                    None => s.add_transaction(input, cx),
+                    Some(id) if apply_to_series => s.update_transaction_and_series(id, input, cx),
+                    Some(id) => s.update_transaction(id, input, repeat, cx),
+                    None => s.add_transaction(input, repeat, cx),
                 });
                 self.reset_form(window, cx);
             }
@@ -479,22 +596,36 @@ impl TransactionsView {
     }
 
     fn start_edit(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(t) = self
-            .state
-            .read(cx)
+        let state = self.state.read(cx);
+        let Some(t) = state
             .transactions
             .iter()
+            .chain(&state.pending)
             .find(|t| t.id == id)
             .cloned()
         else {
             return;
         };
+        // A payment needing its amount starts with an empty amount, showing
+        // the estimate, so the actual amount is typed in.
+        self.editing_estimate = t.amount_pending.then_some(t.amount);
+        let (amount, placeholder) = match self.editing_estimate {
+            Some(estimate) => (String::new(), format!("Est. {}", estimate.to_plain())),
+            None => (t.amount.to_plain(), "0.00".to_string()),
+        };
         self.editing = Some(id);
+        self.editing_series = t
+            .recurring_id
+            .filter(|id| self.state.read(cx).recurring(*id).is_some());
+        self.apply_to_series = false;
+        self.repeat = false;
         self.form_error = None;
         self.date
             .update(cx, |picker, cx| picker.set_date(t.date, window, cx));
-        self.amount
-            .update(cx, |i, cx| i.set_value(t.amount.to_plain(), window, cx));
+        self.amount.update(cx, |i, cx| {
+            i.set_value(amount, window, cx);
+            i.set_placeholder(placeholder, window, cx);
+        });
         self.note
             .update(cx, |i, cx| i.set_value(t.note, window, cx));
         self.category.update(cx, |s, cx| match t.category_id {
@@ -507,6 +638,21 @@ impl TransactionsView {
                 None => s.set_selected_index(None, window, cx),
             });
         cx.notify();
+    }
+
+    /// Open a payment that needs its amount, showing its month if needed,
+    /// with the cursor in the Amount field.
+    fn edit_pending(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let Some(t) = state.pending.iter().find(|t| t.id == id) else {
+            return;
+        };
+        let month = Month::containing(t.date);
+        if !state.all_time && state.month != month {
+            self.state.update(cx, |s, cx| s.set_month(month, cx));
+        }
+        self.start_edit(id, window, cx);
+        self.amount.update(cx, |i, cx| i.focus(window, cx));
     }
 
     /// Delete a transaction and offer to undo it, replacing any earlier undo.
@@ -563,6 +709,17 @@ impl TransactionsView {
             self.date
                 .update(cx, |picker, cx| picker.set_date(date, window, cx));
         }
+        self.editing_series = None;
+        self.apply_to_series = false;
+        self.repeat = false;
+        self.repeat_varies = false;
+        if self.editing_estimate.take().is_some() {
+            self.amount
+                .update(cx, |i, cx| i.set_placeholder("0.00", window, cx));
+        }
+        self.repeat_end.update(cx, |picker, cx| {
+            picker.set_date(Date::Single(None), window, cx)
+        });
         self.form_error = None;
         self.amount.update(cx, |i, cx| i.set_value("", window, cx));
         self.note.update(cx, |i, cx| i.set_value("", window, cx));
@@ -625,6 +782,7 @@ impl TransactionsView {
                         .w(px(190.)),
                     ),
             )
+            .child(self.render_repeat(cx))
             .child(
                 h_flex()
                     .gap_3()
@@ -642,9 +800,352 @@ impl TransactionsView {
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),
             )
+            .when_some(self.editing_estimate, |this, estimate| {
+                let message = if estimate.0 == 0 {
+                    "Enter the actual amount from the bill.".to_string()
+                } else {
+                    format!(
+                        "Enter the actual amount from the bill. It was estimated at {estimate}."
+                    )
+                };
+                this.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().warning)
+                        .child(message),
+                )
+            })
             .when_some(self.form_error.clone(), |this, error| {
                 this.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
+    }
+
+    /// "Repeat" for a transaction that isn't recurring yet, or "Use for later
+    /// payments too" when editing a payment of a recurring transaction.
+    fn render_repeat(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let row = h_flex().gap_3().items_center().min_h(px(32.));
+        if let Some(series) = self.editing_series {
+            let state = self.state.read(cx);
+            let editing = self.editing.and_then(|id| {
+                state
+                    .transactions
+                    .iter()
+                    .chain(&state.pending)
+                    .find(|t| t.id == id)
+            });
+            let series = state.recurring(series);
+            let schedule = series
+                .map(|r| r.schedule_label().to_lowercase())
+                .unwrap_or_default();
+            let varies = series
+                .zip(editing.and_then(|t| t.occurrence))
+                .is_some_and(|(r, month)| r.amount_in(month).is_none());
+            let hint = if varies {
+                format!(
+                    "Repeats {schedule}; the amount varies. Checking this sets a fixed amount \
+                     from this payment on."
+                )
+            } else {
+                format!("Repeats {schedule}. Payments already added won't change.")
+            };
+            return row
+                .child(
+                    Checkbox::new("apply-to-series")
+                        .label("Use for later payments too")
+                        .tooltip(
+                            "Later payments of this recurring transaction get this amount, \
+                             category, payment method and note.",
+                        )
+                        .checked(self.apply_to_series)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.apply_to_series = *checked;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    truncated_text("series-hint", hint)
+                        .flex_1()
+                        .text_sm()
+                        .text_color(muted),
+                );
+        }
+        row.child(
+            Checkbox::new("repeat")
+                .label("Repeat")
+                .checked(self.repeat)
+                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                    this.repeat = *checked;
+                    cx.notify();
+                })),
+        )
+        .when(self.repeat, |this| {
+            this.child(div().w(px(160.)).child(Select::new(&self.frequency)))
+                .child(div().text_sm().text_color(muted).child("last payment"))
+                .child(
+                    div().w(px(170.)).child(
+                        DatePicker::new(&self.repeat_end)
+                            .placeholder("Never")
+                            .cleanable(true),
+                    ),
+                )
+                .child(
+                    Checkbox::new("repeat-varies")
+                        .label("Amount varies")
+                        .tooltip(
+                            "For bills like utilities: later payments are added with an \
+                             estimate, and you're reminded to enter the actual amount once \
+                             each one's date passes.",
+                        )
+                        .checked(self.repeat_varies)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.repeat_varies = *checked;
+                            cx.notify();
+                        })),
+                )
+        })
+    }
+
+    /// Payments whose amount varies and whose date has passed, each with a
+    /// button to enter the actual amount.
+    fn render_pending(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let state = self.state.read(cx);
+        if state.pending.is_empty() {
+            return None;
+        }
+        let theme = cx.theme();
+        let title = match state.pending.len() {
+            1 => "1 bill needs its actual amount".to_string(),
+            n => format!("{n} bills need their actual amounts"),
+        };
+        let rows: Vec<AnyElement> = state
+            .pending
+            .iter()
+            .map(|t| {
+                let id = t.id;
+                let category = t
+                    .category_id
+                    .and_then(|id| state.category(id))
+                    .map_or(UNASSIGNED.to_string(), |c| c.name.clone());
+                let estimate = if t.amount.0 == 0 {
+                    "No estimate".to_string()
+                } else {
+                    format!("Est. {}", t.amount)
+                };
+                h_flex()
+                    .gap_4()
+                    .py_1()
+                    .items_center()
+                    .text_sm()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .w(px(100.))
+                            .text_color(theme.muted_foreground)
+                            .child(t.date.format("%b %-d, %Y").to_string()),
+                    )
+                    .child(
+                        truncated_text(
+                            SharedString::from(format!("pending-category-{id}")),
+                            category,
+                        )
+                        .w(px(160.)),
+                    )
+                    .child(
+                        truncated_text(
+                            SharedString::from(format!("pending-note-{id}")),
+                            t.note.clone(),
+                        )
+                        .flex_1(),
+                    )
+                    .child(
+                        div()
+                            .w(px(110.))
+                            .text_right()
+                            .text_color(theme.muted_foreground)
+                            .child(estimate),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("enter-amount-{id}")))
+                            .primary()
+                            .compact()
+                            .label("Enter amount")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_pending(id, window, cx)
+                            })),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            v_flex()
+                .flex_none()
+                .gap_1()
+                .px_4()
+                .py_2()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.warning)
+                .bg(theme.warning.opacity(0.08))
+                .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                .children(rows),
+        )
+    }
+
+    /// "2 recurring transactions due in October · Review · Add all", with
+    /// each due payment listed when expanded.
+    fn render_due(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let state = self.state.read(cx);
+        if state.all_time || (state.due.is_empty() && state.skipped == 0) {
+            return None;
+        }
+        let theme = cx.theme();
+        let count = state.due.len();
+        let title = if count == 0 {
+            format!(
+                "{} skipped in {}",
+                recurring_label(state.skipped),
+                state.month.label()
+            )
+        } else {
+            format!("{} due in {}", recurring_label(count), state.month.label())
+        };
+        let header = h_flex()
+            .gap_2()
+            .items_center()
+            .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(title))
+            .when(state.skipped > 0, |this| {
+                this.child(
+                    Button::new("unskip")
+                        .ghost()
+                        .compact()
+                        .label(if count == 0 {
+                            "Show again".to_string()
+                        } else {
+                            format!("Show {} skipped", state.skipped)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |s, cx| s.unskip_all(cx));
+                        })),
+                )
+            })
+            .when(count > 0, |this| {
+                this.child(
+                    Button::new("review-due")
+                        .ghost()
+                        .compact()
+                        .label(if self.due_expanded { "Hide" } else { "Review" })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.due_expanded = !this.due_expanded;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("add-all-due")
+                        .primary()
+                        .compact()
+                        .label("Add all")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let due = this.state.read(cx).due.clone();
+                            this.state.update(cx, |s, cx| s.add_due(due, cx));
+                        })),
+                )
+            });
+
+        let rows: Vec<AnyElement> = if self.due_expanded {
+            state
+                .due
+                .iter()
+                .map(|due| self.render_due_row(state, due, cx))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some(
+            v_flex()
+                .flex_none()
+                .gap_1()
+                .px_4()
+                .py_2()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.secondary)
+                .child(header)
+                .children(rows),
+        )
+    }
+
+    fn render_due_row(
+        &self,
+        state: &AppState,
+        due: &DueTransaction,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let id = due.recurring_id;
+        let series = state.recurring(id);
+        let category = series
+            .and_then(|r| r.category_id)
+            .and_then(|id| state.category(id))
+            .map_or(UNASSIGNED.to_string(), |c| c.name.clone());
+        let note = series.map(|r| r.note.clone()).unwrap_or_default();
+        let add = due.clone();
+        let skip = due.clone();
+        h_flex()
+            .gap_4()
+            .py_1()
+            .items_center()
+            .text_sm()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .w(px(100.))
+                    .text_color(theme.muted_foreground)
+                    .child(due.date.format("%b %-d, %Y").to_string()),
+            )
+            .child(
+                truncated_text(SharedString::from(format!("due-category-{id}")), category)
+                    .w(px(160.)),
+            )
+            .child(truncated_text(SharedString::from(format!("due-note-{id}")), note).flex_1())
+            .child(
+                div()
+                    .w(px(110.))
+                    .text_right()
+                    .font_weight(FontWeight::MEDIUM)
+                    .when(due.estimated, |this| {
+                        this.text_color(theme.muted_foreground)
+                    })
+                    .child(match (due.estimated, due.amount) {
+                        (false, amount) => amount.to_string(),
+                        (true, Money(0)) => "Varies".to_string(),
+                        (true, amount) => format!("≈ {amount}"),
+                    }),
+            )
+            .child(
+                Button::new(SharedString::from(format!("add-due-{id}")))
+                    .outline()
+                    .compact()
+                    .label("Add")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let add = add.clone();
+                        this.state.update(cx, |s, cx| s.add_due(vec![add], cx));
+                    })),
+            )
+            .child(
+                Button::new(SharedString::from(format!("skip-due-{id}")))
+                    .ghost()
+                    .compact()
+                    .label("Skip")
+                    .tooltip("Don't add this month's payment")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |s, cx| s.skip_due(&skip, cx));
+                    })),
+            )
+            .into_any_element()
     }
 
     /// Search box, category filter and the month / all time toggle.
@@ -809,22 +1310,43 @@ impl TransactionsView {
                         .w(px(140.))
                         .text_color(theme.muted_foreground),
                     )
-                    .child(truncated_text("note", t.note.clone()).flex_1())
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .when(t.recurring_id.is_some(), |this| {
+                                this.child(
+                                    div()
+                                        .id("recurring")
+                                        .flex_none()
+                                        .text_color(theme.muted_foreground)
+                                        .child("↻")
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("Recurring").build(window, cx)
+                                        }),
+                                )
+                            })
+                            .child(truncated_text("note", t.note.clone())),
+                    )
                     .child(
                         div()
                             .w(px(110.))
                             .text_right()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(if is_income {
+                            .text_color(if t.amount_pending {
+                                theme.muted_foreground
+                            } else if is_income {
                                 theme.success
                             } else {
                                 theme.foreground
                             })
-                            .child(if is_income {
-                                format!("+{}", t.amount)
-                            } else {
-                                format!("-{}", t.amount)
-                            }),
+                            .child(format!(
+                                "{}{}{}",
+                                if t.amount_pending { "≈ " } else { "" },
+                                if is_income { "+" } else { "-" },
+                                t.amount
+                            )),
                     )
                     .child(
                         h_flex().w(ACTIONS_WIDTH).justify_end().gap_1().child(
@@ -934,6 +1456,8 @@ impl Render for TransactionsView {
             .track_focus(&self.focus_handle)
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::undo_delete))
+            .children(self.render_pending(cx))
+            .children(self.render_due(cx))
             .child(self.render_form(cx))
             .child(self.render_filters(&filter, cx))
             .child(
